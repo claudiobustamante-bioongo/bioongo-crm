@@ -31,7 +31,12 @@ export default async function Home({
 
   return (
     <main className="p-8 max-w-4xl mx-auto">
-      <h1 className="text-3xl font-semibold mb-2">Clientes Bioongo</h1>
+      <div className="flex items-baseline gap-4 mb-2">
+        <h1 className="text-3xl font-semibold">Clientes Bioongo</h1>
+        <Link href="/tabla" className="text-sm text-slate-400 hover:text-slate-700 transition-colors">
+          Ver tabla de cotejo →
+        </Link>
+      </div>
       <p className="text-sm text-slate-500 mb-4">
         {clientes?.length ?? 0} cliente{clientes?.length !== 1 ? 's' : ''}
       </p>
@@ -67,7 +72,8 @@ export default async function Home({
           const esVigente = c.status === 'vigente';
 
           return (
-            <li key={c.codigo_cliente} className="border border-slate-200 rounded-lg p-4">
+            <Link key={c.codigo_cliente} href={`/cliente/${c.codigo_cliente}`}>
+            <li className="border border-slate-200 rounded-lg p-4 transition-colors hover:border-slate-400 cursor-pointer">
               {nombreCompleto ? (
                 <p className="font-semibold text-slate-900">{nombreCompleto}</p>
               ) : (
@@ -87,6 +93,7 @@ export default async function Home({
                 {c.status ?? 'sin status'}
               </span>
             </li>
+            </Link>
           );
         })}
       </ul>
