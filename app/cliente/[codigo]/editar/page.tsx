@@ -1,7 +1,7 @@
 'use client';
 import { useState, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { supabase } from '@/lib/supabase';
+import { createClient } from '@/lib/supabase-browser';
 import Link from 'next/link';
 
 const CAMPOS = [
@@ -26,6 +26,8 @@ export default function EditarCliente() {
   const [form, setForm] = useState<Record<string, string>>({});
   const [cargando, setCargando] = useState(true);
   const [mensaje, setMensaje] = useState('');
+
+  const supabase = createClient();
 
   useEffect(() => {
     async function cargar() {
@@ -60,6 +62,17 @@ export default function EditarCliente() {
     }
   }
 
+  async function eliminar() {
+    const ok = window.confirm('¿Eliminar este cliente permanentemente? Esta acción no se puede deshacer.');
+    if (!ok) return;
+    const { error } = await supabase.from('clientes').delete().eq('codigo_cliente', codigo);
+    if (error) {
+      setMensaje('Error al eliminar: ' + error.message);
+    } else {
+      router.push('/');
+    }
+  }
+
   if (cargando) return <main className="p-8 max-w-xl mx-auto">Cargando…</main>;
 
   return (
@@ -84,6 +97,12 @@ export default function EditarCliente() {
           className="bg-slate-900 text-white rounded py-2 mt-2 hover:bg-slate-700"
         >
           Guardar cambios
+        </button>
+        <button
+          onClick={eliminar}
+          className="border border-red-400 text-red-600 bg-white rounded py-2 hover:bg-red-50 transition-colors"
+        >
+          Eliminar cliente
         </button>
         {mensaje && <p className="text-sm text-red-600 mt-2">{mensaje}</p>}
       </div>

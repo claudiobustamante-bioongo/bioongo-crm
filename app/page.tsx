@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { supabase } from '@/lib/supabase';
+import { createClient } from '@/lib/supabase-server';
 
 export default async function Home({
   searchParams,
@@ -7,6 +7,8 @@ export default async function Home({
   searchParams: Promise<{ status?: string }>;
 }) {
   const { status } = await searchParams;
+
+  const supabase = await createClient();
 
   let query = supabase
     .from('clientes')

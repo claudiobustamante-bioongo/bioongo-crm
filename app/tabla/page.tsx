@@ -1,4 +1,4 @@
-import { supabase } from '@/lib/supabase';
+import { createClient } from '@/lib/supabase-server';
 import Link from 'next/link';
 
 export const dynamic = 'force-dynamic';
@@ -12,6 +12,8 @@ const COLUMNAS = [
 ];
 
 export default async function Tabla() {
+  const supabase = await createClient();
+
   const { data: clientes, error } = await supabase
     .from('clientes')
     .select('codigo_cliente, status, nombre, apellido_paterno, apellido_materno, rfc, curp, correo, celular')

@@ -1,6 +1,6 @@
 'use client';
 import { useState } from 'react';
-import { supabase } from '@/lib/supabase';
+import { createClient } from '@/lib/supabase-browser';
 
 export default function NuevoCliente() {
   const [form, setForm] = useState({
@@ -13,6 +13,8 @@ export default function NuevoCliente() {
     rfc: '',
   });
   const [mensaje, setMensaje] = useState('');
+
+  const supabase = createClient();
 
   function actualizar(campo: string, valor: string) {
     setForm({ ...form, [campo]: valor });
