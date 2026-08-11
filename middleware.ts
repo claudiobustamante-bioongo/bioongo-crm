@@ -1,7 +1,15 @@
 import { createServerClient } from '@supabase/ssr';
 import { NextResponse, type NextRequest } from 'next/server';
 
+// Rutas accesibles sin sesión
+const RUTAS_PUBLICAS = ['/captura'];
+
 export async function middleware(request: NextRequest) {
+  // El formulario público no requiere sesión: salimos antes de consultar auth
+  if (RUTAS_PUBLICAS.some((r) => request.nextUrl.pathname.startsWith(r))) {
+    return NextResponse.next();
+  }
+
   let response = NextResponse.next({ request });
 
   const supabase = createServerClient(
