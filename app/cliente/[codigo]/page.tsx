@@ -1,5 +1,6 @@
 import { createClient } from '@/lib/supabase-server';
 import Link from 'next/link';
+import PerfilIA from './PerfilIA';
 
 export const dynamic = 'force-dynamic';
 
@@ -26,6 +27,12 @@ export default async function FichaCliente({
       </main>
     );
   }
+
+  const { data: perfilRiesgo } = await supabase
+    .from('perfil_riesgo')
+    .select('perfil_ia')
+    .eq('codigo_cliente', codigo)
+    .maybeSingle();
 
   const nombre = [cliente.nombre, cliente.apellido_paterno, cliente.apellido_materno]
     .filter(Boolean).join(' ');
@@ -71,6 +78,8 @@ export default async function FichaCliente({
           </div>
         ))}
       </dl>
+
+      <PerfilIA codigo={codigo} inicial={perfilRiesgo?.perfil_ia ?? null} />
     </main>
   );
 }
