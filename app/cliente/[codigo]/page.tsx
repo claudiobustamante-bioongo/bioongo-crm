@@ -1,6 +1,15 @@
 import { createClient } from '@/lib/supabase-server';
 import Link from 'next/link';
 import PerfilIA from './PerfilIA';
+import CalcularIPS, { type IPSGuardado } from './CalcularIPS';
+import type { EntradaBitacora } from '@/lib/ips-engine';
+
+/** Los `numeric` de Postgres pueden llegar como texto. */
+function aNumero(valor: unknown): number | null {
+  if (valor === null || valor === undefined) return null;
+  const n = typeof valor === 'number' ? valor : Number(valor);
+  return Number.isFinite(n) ? n : null;
+}
 
 export const dynamic = 'force-dynamic';
 
@@ -28,11 +37,33 @@ export default async function FichaCliente({
     );
   }
 
+  // Se ordena igual que /api/calcular-ips para que la página muestre la misma
+  // evaluación que el endpoint escribe. DESC pone los NULL primero: se invierte.
   const { data: perfilRiesgo } = await supabase
     .from('perfil_riesgo')
-    .select('perfil_ia')
+    .select(
+      'perfil_ia, fase, tolerancia_puntos, tolerancia_nivel, capacidad_puntos, capacidad_nivel, puntuacion_ponderada, resultado_perfil, bitacora_calculo, fecha_calculo'
+    )
     .eq('codigo_cliente', codigo)
+    .order('fecha_evaluacion', { ascending: false, nullsFirst: false })
+    .limit(1)
     .maybeSingle();
+
+  const ipsGuardado: IPSGuardado | null = perfilRiesgo
+    ? {
+        fase: perfilRiesgo.fase,
+        toleranciaPuntos: aNumero(perfilRiesgo.tolerancia_puntos),
+        toleranciaNivel: aNumero(perfilRiesgo.tolerancia_nivel),
+        capacidadPuntos: aNumero(perfilRiesgo.capacidad_puntos),
+        capacidadNivel: aNumero(perfilRiesgo.capacidad_nivel),
+        puntuacionPonderada: aNumero(perfilRiesgo.puntuacion_ponderada),
+        resultadoPerfil: perfilRiesgo.resultado_perfil,
+        bitacora: Array.isArray(perfilRiesgo.bitacora_calculo)
+          ? (perfilRiesgo.bitacora_calculo as unknown as EntradaBitacora[])
+          : null,
+        fechaCalculo: perfilRiesgo.fecha_calculo,
+      }
+    : null;
 
   const nombre = [cliente.nombre, cliente.apellido_paterno, cliente.apellido_materno]
     .filter(Boolean).join(' ');
@@ -80,6 +111,7 @@ export default async function FichaCliente({
       </dl>
 
       <PerfilIA codigo={codigo} inicial={perfilRiesgo?.perfil_ia ?? null} />
+      <CalcularIPS codigo={codigo} inicial={ipsGuardado} />
     </main>
   );
 }
