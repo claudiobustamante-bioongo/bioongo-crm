@@ -39,6 +39,19 @@ export interface IPSInputs {
   nombreCompleto: string;
   fechaNacimiento: string; // ISO
   ocupacion: string;
+  /**
+   * Ingreso neto mensual del cliente.
+   *
+   * `0` es un valor DECLARADO y válido: el cliente dice no tener ingreso
+   * propio. No bloquea el cálculo, solo se anota en bitácora. Ausente o
+   * ilegible (`null`, `undefined`, `NaN`) sí bloquea, porque eso es
+   * expediente incompleto. Los dos casos nunca deben confundirse; la
+   * distinción se sostiene en `validarBloqueantes`.
+   *
+   * El ingreso no puntúa en ninguna tabla de capacidad. La menor holgura de
+   * quien no tiene ingreso propio ya se refleja por ocupación (`trabajo del
+   * hogar` 5, `desempleado` 6) y por colchón de liquidez.
+   */
   ingresoMensual: number;
 
   // Tolerancia (6 reactivos, todos opcionales -> neutro si faltan)
@@ -215,18 +228,29 @@ function puntuarDependientes(
 /**
  * Cobertura de deuda: (hipoteca + otrasDeudas) / ahorros.
  *
- * Distingue tres situaciones que antes se confundían en un solo neutro:
+ * Distingue cuatro situaciones que no deben confundirse:
  *
  *   1. `tieneAhorros === false` — el cliente DECLARÓ no tener ahorros. Es la
  *      peor holgura financiera posible, no una ausencia de dato: 5 puntos.
- *   2. `ahorros > 0` — hay monto: se calcula el ratio real.
- *   3. `tieneAhorros === undefined` o monto ausente — no sabemos: neutro (3),
- *      anotado en bitácora como imputación.
+ *   2. `ahorros === 0` sin declaración que lo contradiga — cero real: no hay
+ *      patrimonio financiero que absorba pérdidas. También 5 puntos.
+ *   3. `ahorros > 0` — hay monto: se calcula el ratio real.
+ *   4. Monto ausente — no sabemos: neutro (3), anotado como imputación.
  *
- * Caso límite: si declaró NO tener ahorros pero la columna trae un monto, se
- * anota la contradicción y prevalece la declaración del cliente (5 puntos),
- * que es el criterio prudente para capacidad. Cambiar esa preferencia es
- * cambiar el orden de los dos primeros bloques.
+ * Los dos casos contradictorios NO se resuelven igual, y la asimetría es
+ * deliberada:
+ *
+ *   - Declaró NO tener ahorros pero la columna trae monto: prevalece la
+ *     declaración (5 puntos). El monto puede arrastrarse de una captura vieja.
+ *   - Declaró SÍ tenerlos pero el monto es 0: prevalece la DECLARACIÓN, no el
+ *     monto (neutro 3). En la práctica el cliente omite la cifra por
+ *     privacidad, no porque no tenga ahorros; leer ese 0 como cero real
+ *     castigaría justo a quien se reservó el dato. Hallazgo del asesor,
+ *     24/08/2026.
+ *
+ * En ambos casos gana la declaración del cliente sobre el monto de la columna.
+ * Los dos quedan anotados en bitácora. Cambiar cualquiera de las dos
+ * preferencias es cambiar el orden de los bloques.
  */
 function puntuarCoberturaDeuda(
   inputs: IPSInputs,
@@ -236,7 +260,14 @@ function puntuarCoberturaDeuda(
   const SIN_AHORROS = 5;
   const PASO = 'Paso 3 - Capacidad';
   const { ahorros, hipoteca, otrasDeudas, tieneAhorros } = inputs;
-  const montoValido = !!ahorros && Number.isFinite(ahorros) && ahorros > 0;
+  // `ahorros === 0` es un monto declarado, no una ausencia. Por eso la
+  // presencia se comprueba contra undefined/null y NUNCA con `!!ahorros`:
+  // ese falsy era el bug que mandaba el cero declarado al neutro.
+  const montoPresente =
+    ahorros !== undefined && ahorros !== null && Number.isFinite(ahorros);
+  const ceroDeclarado = montoPresente && ahorros === 0;
+  const montoNegativo = montoPresente && ahorros! < 0;
+  const montoValido = montoPresente && ahorros! > 0;
   const declara = interpretarDeclaracion(tieneAhorros);
   // Vino un valor pero no se pudo interpretar: se trata como desconocido y se
   // deja constancia, para que no pase inadvertido.
@@ -256,7 +287,47 @@ function puntuarCoberturaDeuda(
     return SIN_AHORROS;
   }
 
-  // 2. Hay monto: el ratio es calculable.
+  // 2. Declaró tener ahorros y el monto capturado es 0. El 0 aquí no es un
+  //    cero real: es la cifra que el cliente prefirió no dar. Se lee como
+  //    faltante, y por eso este bloque va ANTES del de cero real.
+  if (ceroDeclarado && declara === true) {
+    bitacora.push({
+      paso: PASO,
+      detalle:
+        `Cobertura de deuda: el cliente declaró tener ahorros pero no capturó ` +
+        `el monto. Se trata como dato faltante, no como cero. Se imputa el ` +
+        `neutro (${NEUTRO}). Pendiente de captura en la revisión. Si el ` +
+        `cliente efectivamente tiene cero ahorros, debe registrarse como ` +
+        `tiene_ahorros = 'No', no como monto 0 con declaración afirmativa.`,
+    });
+    return NEUTRO;
+  }
+
+  // 3. Monto declarado en cero sin declaración que lo contradiga: cero real,
+  //    misma lectura que el punto 1.
+  if (ceroDeclarado) {
+    bitacora.push({
+      paso: PASO,
+      detalle:
+        `Cobertura de deuda: el cliente declaró cero ahorros; sin patrimonio ` +
+        `financiero que absorba pérdidas (${SIN_AHORROS} puntos).`,
+    });
+    return SIN_AHORROS;
+  }
+
+  // 4. Monto presente pero negativo: dato inválido, no una declaración.
+  if (montoNegativo) {
+    bitacora.push({
+      paso: PASO,
+      detalle:
+        `Cobertura de deuda: el monto de ahorros (${ahorros}) es negativo y ` +
+        `no es interpretable. Se trata como desconocido y se imputa el neutro ` +
+        `(${NEUTRO}). Requiere corregir el dato.`,
+    });
+    return NEUTRO;
+  }
+
+  // 5. Hay monto positivo: el ratio es calculable.
   if (montoValido) {
     const deuda = (hipoteca ?? 0) + (otrasDeudas ?? 0);
     const ratio = deuda / ahorros!;
@@ -277,7 +348,8 @@ function puntuarCoberturaDeuda(
     return puntos;
   }
 
-  // 3a. Dijo que sí tiene ahorros pero no dejó monto: cuestionario incompleto.
+  // 6a. Dijo que sí tiene ahorros y no dejó monto alguno: cuestionario
+  //     incompleto. El caso monto = 0 ya salió por el bloque 2.
   if (declara === true) {
     bitacora.push({
       paso: PASO,
@@ -289,7 +361,7 @@ function puntuarCoberturaDeuda(
     return NEUTRO;
   }
 
-  // 3b. Nadie preguntó, o la declaración no se entiende: dato desconocido.
+  // 6b. Nadie preguntó, o la declaración no se entiende: dato desconocido.
   bitacora.push({
     paso: PASO,
     detalle: ilegible
@@ -316,6 +388,10 @@ function validarBloqueantes(inputs: IPSInputs): Date {
   if (!inputs.ocupacion || !inputs.ocupacion.trim()) {
     faltantes.push('ocupacion');
   }
+  // OJO: la comparación es explícita a propósito. `!inputs.ingresoMensual`
+  // parece equivalente y no lo es: volvería falsy al 0, y un ingreso declarado
+  // en cero quedaría bloqueado como si fuera dato faltante. Solo son
+  // bloqueantes el ausente (null/undefined), el ilegible (NaN) y el negativo.
   if (
     inputs.ingresoMensual === undefined ||
     inputs.ingresoMensual === null ||
@@ -447,6 +523,21 @@ export function calcularPerfilIPS(
   // --- Paso 3: capacidad ---------------------------------------------------
 
   const PASO_3 = 'Paso 3 - Capacidad';
+
+  // Ingreso declarado en cero: dato válido, no faltante. No suma puntos —el
+  // ingreso no está en ninguna tabla de capacidad— pero el resultado tampoco
+  // debe ocultar que se calculó sobre un cliente sin ingreso propio.
+  if (inputs.ingresoMensual === 0) {
+    bitacora.push({
+      paso: PASO_3,
+      detalle:
+        `Ingreso mensual: el cliente declaró no tener ingreso propio (0). Es ` +
+        `un dato válido, no un faltante, y por eso no bloquea el cálculo. No ` +
+        `suma puntos: el ingreso no puntúa en la metodología, así que la menor ` +
+        `capacidad debe leerse en ocupación y colchón de liquidez. Confirmar ` +
+        `que la ocupación registrada ("${inputs.ocupacion}") corresponde.`,
+    });
+  }
 
   const capacidadDesglose: CapacidadDesglose = {
     fase: CAPACIDAD_FASE[normalizar(fase)],
