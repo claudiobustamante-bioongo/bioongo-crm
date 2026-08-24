@@ -26,6 +26,18 @@ export type Fase =
 
 export type PerfilRiesgo = 'Alto' | 'Moderado' | 'Bajo' | 'Libre de Riesgo';
 
+/**
+ * Los cuatro perfiles, de más a menos riesgo. Fuente única para el selector
+ * del asesor y para validar lo que llega a la API: si cambia el tipo, aquí
+ * falla la compilación.
+ */
+export const PERFILES: readonly PerfilRiesgo[] = [
+  'Alto',
+  'Moderado',
+  'Bajo',
+  'Libre de Riesgo',
+];
+
 // ---------------------------------------------------------------------------
 // Tolerancia al riesgo (disposición) — puntaje máximo 24
 // ---------------------------------------------------------------------------
@@ -176,6 +188,17 @@ export type Banda<T> = { max: number; valor: T };
  *   BANDAS_PERFIL:    <=1.75 Alto, <=2.5 Moderado, <=3.4 Bajo, resto Libre
  *
  * BANDAS_TOLERANCIA no cambió: sus 6 reactivos y su rango 6–24 son los mismos.
+ *
+ * AJUSTE 24/08/2026 — BANDAS_PERFIL
+ *
+ * El corte de "Moderado" baja de 2.8 a 2.5. La banda anterior absorbía perfiles
+ * que el asesor clasifica como distintos.
+ *
+ * Validado contra dos casos de referencia del asesor:
+ *   - CSPFU1289 (ponderada 2.2) debe salir Moderado.
+ *   - CSPFU1062 (ponderada 2.8) debe salir Bajo.
+ *
+ * Con el corte en 2.8 ambos caían en Moderado; con el corte en 2.5 se separan.
  */
 
 /** Puntaje de tolerancia (6–24) → nivel 1–4. */
@@ -198,7 +221,7 @@ export const BANDAS_CAPACIDAD: Banda<number>[] = [
 /** Puntuación ponderada (1.0–4.4) → perfil de riesgo. */
 export const BANDAS_PERFIL: Banda<PerfilRiesgo>[] = [
   { max: 2.0, valor: 'Alto' },
-  { max: 2.8, valor: 'Moderado' },
+  { max: 2.5, valor: 'Moderado' },
   { max: 3.5, valor: 'Bajo' },
   { max: Infinity, valor: 'Libre de Riesgo' },
 ];

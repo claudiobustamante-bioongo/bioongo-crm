@@ -42,7 +42,7 @@ export default async function FichaCliente({
   const { data: perfilRiesgo } = await supabase
     .from('perfil_riesgo')
     .select(
-      'perfil_ia, fase, tolerancia_puntos, tolerancia_nivel, capacidad_puntos, capacidad_nivel, puntuacion_ponderada, resultado_perfil, bitacora_calculo, fecha_calculo'
+      'perfil_ia, fase, tolerancia_puntos, tolerancia_nivel, capacidad_puntos, capacidad_nivel, puntuacion_ponderada, resultado_perfil, bitacora_calculo, fecha_calculo, perfil_ajustado, comentario_asesor, ajustado_por, fecha_ajuste'
     )
     .eq('codigo_cliente', codigo)
     .order('fecha_evaluacion', { ascending: false, nullsFirst: false })
@@ -62,6 +62,10 @@ export default async function FichaCliente({
           ? (perfilRiesgo.bitacora_calculo as unknown as EntradaBitacora[])
           : null,
         fechaCalculo: perfilRiesgo.fecha_calculo,
+        perfilAjustado: perfilRiesgo.perfil_ajustado,
+        comentarioAsesor: perfilRiesgo.comentario_asesor,
+        ajustadoPor: perfilRiesgo.ajustado_por,
+        fechaAjuste: perfilRiesgo.fecha_ajuste,
       }
     : null;
 

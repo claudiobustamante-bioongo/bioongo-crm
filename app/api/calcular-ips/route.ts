@@ -75,7 +75,7 @@ export async function POST(request: Request) {
     // El select debe ser un literal: supabase-js infiere los tipos parseando la
     // cadena, y una concatenación en runtime le deja `GenericStringError`.
     .select(
-      'id, tolerancia_perdida, reaccion_caida_10, negocio_propio, percepcion_riesgo_empleo, prefiere_ingreso_seguro, no_puede_perder, colchon_liquidez, dependientes, situacion_habitacional, ahorros, hipoteca, otras_deudas, objetivo_inversion, ganancia_deseada, horizonte'
+      'id, tolerancia_perdida, reaccion_caida_10, negocio_propio, percepcion_riesgo_empleo, prefiere_ingreso_seguro, no_puede_perder, colchon_liquidez, dependientes, situacion_habitacional, tiene_ahorros, ahorros, hipoteca, otras_deudas, objetivo_inversion, ganancia_deseada, horizonte'
     )
     .eq('codigo_cliente', codigoCliente)
     .order('fecha_evaluacion', { ascending: false, nullsFirst: false })
@@ -125,6 +125,9 @@ export async function POST(request: Request) {
     colchonLiquidez: aTexto(perfil.colchon_liquidez),
     dependientes: aNumero(perfil.dependientes),
     situacionHabitacional: aTexto(perfil.situacion_habitacional),
+    // `null` en la base significa "no se preguntó": debe llegar como undefined,
+    // no como false, o el motor lo leería como "declaró no tener ahorros".
+    tieneAhorros: perfil.tiene_ahorros ?? undefined,
     ahorros: aNumero(perfil.ahorros),
     hipoteca: aNumero(perfil.hipoteca),
     otrasDeudas: aNumero(perfil.otras_deudas),

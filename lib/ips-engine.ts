@@ -53,6 +53,13 @@ export interface IPSInputs {
   colchonLiquidez?: string;
   dependientes?: number;
   situacionHabitacional?: string;
+  /**
+   * Declaración del cliente sobre si tiene ahorros.
+   * Acepta booleano o el texto de la base ('Sí' / 'No'); se interpreta con
+   * `interpretarDeclaracion`. `undefined` significa "no se preguntó", que NO
+   * es lo mismo que "no tiene".
+   */
+  tieneAhorros?: boolean | string;
   ahorros?: number;
   hipoteca?: number;
   otrasDeudas?: number;
@@ -165,6 +172,26 @@ function fasePorEdad(edad: number): Fase {
   return 'Retiro';
 }
 
+/**
+ * Interpreta una declaración Sí/No que puede llegar como booleano o como texto.
+ * Hoy `perfil_riesgo.tiene_ahorros` es `text` con valores 'Sí' / 'No', pero el
+ * motor no debe depender de esa forma de almacenamiento.
+ *
+ * Devuelve `undefined` cuando no hay valor o cuando el texto no se reconoce:
+ * en ambos casos significa "no sabemos", que nunca debe confundirse con "no".
+ */
+function interpretarDeclaracion(
+  valor: boolean | string | undefined
+): boolean | undefined {
+  if (typeof valor === 'boolean') return valor;
+  if (typeof valor !== 'string' || !valor.trim()) return undefined;
+
+  const texto = normalizar(valor).trim();
+  if (texto === 'si' || texto === 'true') return true;
+  if (texto === 'no' || texto === 'false') return false;
+  return undefined;
+}
+
 /** Dependientes económicos: 0 -> 1, 1 o 2 -> 2, 3 o más -> 3. */
 function puntuarDependientes(
   dependientes: number | undefined,
@@ -187,43 +214,92 @@ function puntuarDependientes(
 
 /**
  * Cobertura de deuda: (hipoteca + otrasDeudas) / ahorros.
- * Sin ahorros conocidos no hay ratio calculable: se imputa el neutro (3).
+ *
+ * Distingue tres situaciones que antes se confundían en un solo neutro:
+ *
+ *   1. `tieneAhorros === false` — el cliente DECLARÓ no tener ahorros. Es la
+ *      peor holgura financiera posible, no una ausencia de dato: 5 puntos.
+ *   2. `ahorros > 0` — hay monto: se calcula el ratio real.
+ *   3. `tieneAhorros === undefined` o monto ausente — no sabemos: neutro (3),
+ *      anotado en bitácora como imputación.
+ *
+ * Caso límite: si declaró NO tener ahorros pero la columna trae un monto, se
+ * anota la contradicción y prevalece la declaración del cliente (5 puntos),
+ * que es el criterio prudente para capacidad. Cambiar esa preferencia es
+ * cambiar el orden de los dos primeros bloques.
  */
 function puntuarCoberturaDeuda(
   inputs: IPSInputs,
   bitacora: EntradaBitacora[]
 ): number {
   const NEUTRO = 3;
-  const { ahorros, hipoteca, otrasDeudas } = inputs;
+  const SIN_AHORROS = 5;
+  const PASO = 'Paso 3 - Capacidad';
+  const { ahorros, hipoteca, otrasDeudas, tieneAhorros } = inputs;
+  const montoValido = !!ahorros && Number.isFinite(ahorros) && ahorros > 0;
+  const declara = interpretarDeclaracion(tieneAhorros);
+  // Vino un valor pero no se pudo interpretar: se trata como desconocido y se
+  // deja constancia, para que no pase inadvertido.
+  const ilegible = tieneAhorros !== undefined && declara === undefined;
 
-  if (!ahorros || !Number.isFinite(ahorros) || ahorros <= 0) {
+  // 1. Declaró explícitamente no tener ahorros.
+  if (declara === false) {
     bitacora.push({
-      paso: 'Paso 3 - Capacidad',
+      paso: PASO,
+      detalle: montoValido
+        ? `Cobertura de deuda: el cliente declaró NO tener ahorros, pero la ` +
+          `columna trae ${ahorros}. Contradicción sin resolver; prevalece la ` +
+          `declaración (${SIN_AHORROS} puntos). Requiere revisión manual.`
+        : `Cobertura de deuda: el cliente declaró NO tener ahorros. Es la peor ` +
+          `holgura posible, no un dato faltante (${SIN_AHORROS} puntos).`,
+    });
+    return SIN_AHORROS;
+  }
+
+  // 2. Hay monto: el ratio es calculable.
+  if (montoValido) {
+    const deuda = (hipoteca ?? 0) + (otrasDeudas ?? 0);
+    const ratio = deuda / ahorros!;
+
+    let puntos: number;
+    if (ratio === 0) puntos = 1;
+    else if (ratio <= 0.25) puntos = 2;
+    else if (ratio <= 0.75) puntos = 3;
+    else if (ratio <= 1.5) puntos = 4;
+    else puntos = 5;
+
+    bitacora.push({
+      paso: PASO,
       detalle:
-        `Cobertura de deuda: ahorros en 0 o sin dato, el ratio no es ` +
-        `calculable. Se imputa el neutro (${NEUTRO}).`,
+        `Cobertura de deuda: deuda ${deuda} / ahorros ${ahorros} = ` +
+        `ratio ${ratio.toFixed(2)} -> ${puntos} puntos.`,
+    });
+    return puntos;
+  }
+
+  // 3a. Dijo que sí tiene ahorros pero no dejó monto: cuestionario incompleto.
+  if (declara === true) {
+    bitacora.push({
+      paso: PASO,
+      detalle:
+        `Cobertura de deuda: el cliente declaró tener ahorros pero no capturó ` +
+        `el monto, así que el ratio no es calculable. Se imputa el neutro ` +
+        `(${NEUTRO}). Falta completar el cuestionario.`,
     });
     return NEUTRO;
   }
 
-  const deuda = (hipoteca ?? 0) + (otrasDeudas ?? 0);
-  const ratio = deuda / ahorros;
-
-  let puntos: number;
-  if (ratio === 0) puntos = 1;
-  else if (ratio <= 0.25) puntos = 2;
-  else if (ratio <= 0.75) puntos = 3;
-  else if (ratio <= 1.5) puntos = 4;
-  else puntos = 5;
-
+  // 3b. Nadie preguntó, o la declaración no se entiende: dato desconocido.
   bitacora.push({
-    paso: 'Paso 3 - Capacidad',
-    detalle:
-      `Cobertura de deuda: deuda ${deuda} / ahorros ${ahorros} = ` +
-      `ratio ${ratio.toFixed(2)} -> ${puntos} puntos.`,
+    paso: PASO,
+    detalle: ilegible
+      ? `Cobertura de deuda: la declaración de ahorros ("${tieneAhorros}") no ` +
+        `se reconoce como Sí/No y no hay monto. Se trata como desconocido y ` +
+        `se imputa el neutro (${NEUTRO}).`
+      : `Cobertura de deuda: sin declaración de ahorros y sin monto. No se sabe ` +
+        `si el cliente tiene ahorros o no. Se imputa el neutro (${NEUTRO}).`,
   });
-
-  return puntos;
+  return NEUTRO;
 }
 
 // ---------------------------------------------------------------------------
