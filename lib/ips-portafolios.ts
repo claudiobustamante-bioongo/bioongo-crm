@@ -18,6 +18,16 @@
  * exención de 60,000 USD y tasa marginal de hasta 40%. Ver advertenciasFiscales
  * de cada universo.
  *
+ * RUTAS DE EJECUCIÓN. No son intercambiables entre universos:
+ *
+ *   UCITS → "LSE" (Bolsa de Londres, cuenta en el extranjero) o "SIC" (Sistema
+ *           Internacional de Cotizaciones, casa de bolsa mexicana). MISMO ISIN
+ *           irlandés, distinta plaza. La elección es fiscal: el art. 129 LISR
+ *           condiciona el 10% de retención definitiva a la bolsa mexicana.
+ *   EEUU  → "US" únicamente (NYSE Arca / Nasdaq, cuenta en el extranjero).
+ *           NO se ofrece por SIC, por estrategia fiscal y no por limitación
+ *           técnica. El porqué está documentado en UNIVERSO_EEUU.
+ *
  * Este módulo cubre los pasos 5 a 7 de la metodología IPS. Los pasos 1 a 4
  * (fase, tolerancia, capacidad, perfil) no cambian: viven en ips-engine.ts.
  *
@@ -44,25 +54,26 @@ export type PerfilRiesgo = "Libre de Riesgo" | "Bajo" | "Moderado" | "Alto";
 /** Universo de instrumentos. Se elige por cliente. */
 export type Universo = "UCITS" | "EEUU";
 
-/** Plaza natural del universo: dónde cotiza el instrumento en su mercado de origen. */
-export type PlazaOrigen = "LSE" | "US";
-
 /**
- * Ruta de ejecución.
- *   "Origen" → mercado propio del universo (LSE para UCITS, EE.UU. para EEUU),
- *              cuenta en el extranjero.
- *   "SIC"    → Sistema Internacional de Cotizaciones, en pesos, casa de bolsa MX.
+ * Ruta de ejecución. Es una PLAZA CONCRETA, no una abstracción sobre "el
+ * mercado propio del universo":
+ *
+ *   "LSE" → Bolsa de Londres, clase USD, cuenta en el extranjero.
+ *   "SIC" → Sistema Internacional de Cotizaciones, en pesos, casa de bolsa MX.
+ *   "US"  → NYSE Arca / Nasdaq, cuenta en el extranjero.
+ *
+ * NO todas las rutas están disponibles en todos los universos: cada
+ * DefinicionUniverso declara las suyas en `rutasDisponibles`, y el motor
+ * rechaza cualquier otra. Ver la nota de estrategia fiscal en UNIVERSO_EEUU
+ * para el porqué de que EE.UU. no ofrezca SIC.
+ *
+ * Una versión anterior de este archivo modelaba la ruta como "Origen" | "SIC",
+ * donde "Origen" se resolvía a LSE o a US según el universo. Eso volvía
+ * REPRESENTABLE la combinación EEUU + SIC, y lo único que la impedía era que
+ * ninguna clave de pizarra de EE.UU. estuviera cotejada: un candado de
+ * inventario, no de concepto. Cargar esas claves habría abierto la puerta.
  */
-export type Ruta = "Origen" | "SIC";
-
-/**
- * Las dos rutas de ejecución. Fuente única para el selector del asesor y para
- * validar lo que llega a la API: si cambia el tipo, aquí falla la compilación.
- */
-export const RUTAS: readonly Ruta[] = ["Origen", "SIC"];
-
-/** Plaza concreta por la que termina ejecutándose una posición. */
-export type PlazaEjecucion = PlazaOrigen | "SIC";
+export type Ruta = "LSE" | "SIC" | "US";
 
 export type ClaseActivo =
   | "Efectivo"
@@ -75,6 +86,8 @@ export type ClaseActivo =
 /** Sustituto ejecutable: mismo rol en la cartera, NO necesariamente mismo índice. */
 export interface Sustituto {
   isin: string | null;
+  /** Contract ID de IBKR del SUSTITUTO. Ver Instrumento.conid. */
+  conid?: number;
   ticker: string;
   tickerSIC: string | null;
   sicVerificado: boolean;
@@ -101,11 +114,27 @@ export interface Instrumento {
    * escriba en un correo NO es verificación: una clave errónea no falla, manda
    * la orden a otro instrumento.
    *
-   * ALCANCE: esta bandera gobierna ÚNICAMENTE la ruta "SIC". Por ruta "Origen"
-   * no se consulta, porque el ticker de la plaza de origen es la clave canónica
-   * del mercado donde se opera.
+   * ALCANCE: esta bandera gobierna ÚNICAMENTE la ruta "SIC", y por tanto solo
+   * tiene sentido en universos que la ofrezcan. Por rutas "LSE" y "US" no se
+   * consulta, porque ahí el ticker de la plaza ES la clave canónica del mercado
+   * donde se opera y no hay traducción de pizarra de por medio.
    */
   sicVerificado: boolean;
+  /**
+   * Contract ID de IBKR. Llave canónica del bróker: identifica el instrumento
+   * sin ambigüedad y no depende de la plaza, igual que el ISIN. Es contra lo
+   * que se manda la orden cuando se opera por IBKR.
+   *
+   * Ausente = no cotejado. Los presentes salen de search_contracts del MCP de
+   * IBKR, cotejados el 2026-08-26 — no transcritos de memoria.
+   *
+   * Por qué importa tener ESTO o el ISIN, y no solo el ticker: el ticker se
+   * repite entre bolsas y apunta a cosas distintas. "HYG" en LSE es Seneca
+   * Growth Capital; "VEA" en la bolsa australiana es Viva Energy Group; "QQQ"
+   * en la canadiense PURE es Questcorp Mining. Una clave errónea no falla:
+   * manda la orden a otro instrumento.
+   */
+  conid?: number;
   nombre: string;
   ter: number | null;
   /** Peso dentro de su clase de activo. Los de una clase suman 1. */
@@ -116,7 +145,13 @@ export interface Instrumento {
 
 export interface DefinicionUniverso {
   clave: Universo;
-  plazaOrigen: PlazaOrigen;
+  /**
+   * Rutas que este universo admite. El motor rechaza cualquier otra ANTES de
+   * mirar inventario: la indisponibilidad es de modelo, no de datos faltantes.
+   */
+  rutasDisponibles: readonly Ruta[];
+  /** Plaza propia. A ella cae el sleeve que no es ejecutable por la ruta pedida. */
+  plazaNativa: Ruta;
   /** Nombre de la clase según el manual, para el IPS impreso. La llave interna no cambia. */
   etiquetas: Partial<Record<ClaseActivo, string>>;
   /** Parcial a propósito: las clases no son idénticas entre universos. */
@@ -126,21 +161,24 @@ export interface DefinicionUniverso {
 
 export interface Posicion {
   isin: string | null;
+  /** Contract ID de IBKR. Llave canónica alterna al ISIN. Ver Instrumento.conid. */
+  conid?: number;
   ticker: string;
   nombre: string;
   clase: ClaseActivo;
   peso: number;
   /** Plaza por la que se ejecuta esta posición en concreto. */
-  rutaEjecucion: PlazaEjecucion;
+  rutaEjecucion: Ruta;
 }
 
 /** Una línea por ticker: lo que se manda a la mesa. Consolida clases. */
 export interface LineaOrden {
   isin: string | null;
+  conid?: number;
   ticker: string;
   nombre: string;
   peso: number;
-  plaza: PlazaEjecucion;
+  plaza: Ruta;
   /** Clases que aporta este ticker. Más de una = el mismo valor sirve a dos roles. */
   clases: ClaseActivo[];
 }
@@ -155,7 +193,7 @@ export interface Validacion {
 export interface ResultadoPortafolio {
   clave: string;
   universo: Universo;
-  plazaOrigen: PlazaOrigen;
+  plazaNativa: Ruta;
   fase: Fase;
   perfil: PerfilRiesgo;
   ruta: Ruta;
@@ -231,7 +269,12 @@ export const ALTERNATIVA_CSPX: Omit<Instrumento, "peso"> = {
 
 export const UNIVERSO_UCITS: DefinicionUniverso = {
   clave: "UCITS",
-  plazaOrigen: "LSE",
+  // Las dos rutas del archivo original: MISMO ISIN irlandés, distinta plaza de
+  // ejecución. Es el único universo con elección de ruta, y la elección es
+  // fiscal: el art. 129 LISR condiciona la retención definitiva del 10% a que
+  // la enajenación se haga por bolsa concesionada en México.
+  rutasDisponibles: ["LSE", "SIC"],
+  plazaNativa: "LSE",
   etiquetas: {
     "Acciones Globales": "Acciones Globales",
     "Satelite Tecnologia": "Satélite Tecnología",
@@ -268,9 +311,11 @@ export const UNIVERSO_UCITS: DefinicionUniverso = {
 // simula: emite la advertencia correspondiente en cada construcción y asienta
 // el ticker por posición para que el cotejo sea posible contra la boleta.
 //
-// tickerSIC queda en null y sicVerificado en false para todo el universo: por
-// ruta "SIC" estos instrumentos no son ejecutables hasta que la casa de bolsa
-// confirme las claves contra el ISIN. Ese candado sigue activo y es intencional.
+// tickerSIC y sicVerificado quedan en null/false para todo el universo y son
+// CAMPOS INERTES aquí: este universo no ofrece ruta SIC (ver la nota de
+// estrategia fiscal en UNIVERSO_EEUU), así que nunca se leen. No son un candado
+// a la espera de que alguien cargue las claves — registrarTickersSIC("EEUU")
+// lanza precisamente para que nadie lo intente.
 //
 // ISIN y TER quedan en null: no se han cotejado contra factsheet ni contra el
 // sistema de la casa de bolsa. No se inventan — un dato de costo sin verificar
@@ -279,31 +324,38 @@ export const UNIVERSO_UCITS: DefinicionUniverso = {
 
 const INSTRUMENTOS_EEUU: Partial<Record<ClaseActivo, readonly Instrumento[]>> = {
   "Efectivo": [
-    { isin: null, ticker: "SGOV", tickerSIC: null, sicVerificado: false, nombre: "iShares 0-3 Month Treasury Bond ETF", ter: null, peso: 1.0 },
+    { isin: null, ticker: "SGOV", tickerSIC: null, sicVerificado: false, conid: 424099317, nombre: "iShares 0-3 Month Treasury Bond ETF", ter: null, peso: 1.0 },
   ],
   "Deuda Gubernamental": [
-    { isin: null, ticker: "SGOV", tickerSIC: null, sicVerificado: false, nombre: "iShares 0-3 Month Treasury Bond ETF", ter: null, peso: 0.22 },
-    { isin: null, ticker: "VGSH", tickerSIC: null, sicVerificado: false, nombre: "Vanguard Short-Term Treasury ETF", ter: null, peso: 0.26 },
-    { isin: null, ticker: "VTIP", tickerSIC: null, sicVerificado: false, nombre: "Vanguard Short-Term Inflation-Protected Securities ETF", ter: null, peso: 0.28 },
-    { isin: null, ticker: "VGIT", tickerSIC: null, sicVerificado: false, nombre: "Vanguard Intermediate-Term Treasury ETF", ter: null, peso: 0.24 },
+    { isin: null, ticker: "SGOV", tickerSIC: null, sicVerificado: false, conid: 424099317, nombre: "iShares 0-3 Month Treasury Bond ETF", ter: null, peso: 0.22 },
+    { isin: null, ticker: "VGSH", tickerSIC: null, sicVerificado: false, conid: 70363044, nombre: "Vanguard Short-Term Treasury ETF", ter: null, peso: 0.26 },
+    { isin: null, ticker: "VTIP", tickerSIC: null, sicVerificado: false, conid: 115664156, nombre: "Vanguard Short-Term Inflation-Protected Securities ETF", ter: null, peso: 0.28 },
+    { isin: null, ticker: "VGIT", tickerSIC: null, sicVerificado: false, conid: 70363079, nombre: "Vanguard Intermediate-Term Treasury ETF", ter: null, peso: 0.24 },
   ],
   "Deuda Corporativa IG": [
-    { isin: null, ticker: "VCSH", tickerSIC: null, sicVerificado: false, nombre: "Vanguard Short-Term Corporate Bond ETF", ter: null, peso: 0.55 },
-    { isin: null, ticker: "VCIT", tickerSIC: null, sicVerificado: false, nombre: "Vanguard Intermediate-Term Corporate Bond ETF", ter: null, peso: 0.45 },
+    { isin: null, ticker: "VCSH", tickerSIC: null, sicVerificado: false, conid: 70363037, nombre: "Vanguard Short-Term Corporate Bond ETF", ter: null, peso: 0.55 },
+    { isin: null, ticker: "VCIT", tickerSIC: null, sicVerificado: false, conid: 70363051, nombre: "Vanguard Intermediate-Term Corporate Bond ETF", ter: null, peso: 0.45 },
   ],
   "High Yield": [
-    { isin: null, ticker: "HYG", tickerSIC: null, sicVerificado: false, nombre: "iShares iBoxx $ High Yield Corporate Bond ETF", ter: null, peso: 1.0 },
+    { isin: null, ticker: "HYG", tickerSIC: null, sicVerificado: false, conid: 43652089, nombre: "iShares iBoxx $ High Yield Corporate Bond ETF", ter: null, peso: 1.0 },
   ],
   // Manual, hoja "Universo": "Acciones Internacionales". Los cuatro pesos suman 1.00.
   // NO se igualan con los de UCITS: difieren por diseño, no por error.
   "Acciones Globales": [
-    { isin: null, ticker: "VOO", tickerSIC: null, sicVerificado: false, nombre: "Vanguard S&P 500 ETF", ter: null, peso: 0.40 },
-    { isin: null, ticker: "VTV", tickerSIC: null, sicVerificado: false, nombre: "Vanguard Value ETF", ter: null, peso: 0.22 },
-    { isin: null, ticker: "VEA", tickerSIC: null, sicVerificado: false, nombre: "Vanguard FTSE Developed Markets ETF", ter: null, peso: 0.24 },
-    { isin: null, ticker: "VWO", tickerSIC: null, sicVerificado: false, nombre: "Vanguard FTSE Emerging Markets ETF", ter: null, peso: 0.14 },
+    { isin: null, ticker: "VOO", tickerSIC: null, sicVerificado: false, conid: 136155102, nombre: "Vanguard S&P 500 ETF", ter: null, peso: 0.40 },
+    // PENDIENTE DE COTEJO · IBKR describe este conid como "VANGUARD MRNGSTR VAL
+    // ETF-AUI", no como "Vanguard Value ETF". La identidad del instrumento NO
+    // está en duda (conid 27638093 verificado), pero el índice de referencia sí:
+    // la etiqueta sugiere Morningstar y el nombre aquí asume el histórico. Las
+    // descripciones de IBKR son abreviaturas internas —ver "ISHR IBX USD HIYLD
+    // CB ETF-UI" para HYG— y no sirven de fuente para el nombre que ve el
+    // cliente. Cotejar contra el factsheet de Vanguard antes de imprimir el IPS.
+    { isin: null, ticker: "VTV", tickerSIC: null, sicVerificado: false, conid: 27638093, nombre: "Vanguard Value ETF", ter: null, peso: 0.22 },
+    { isin: null, ticker: "VEA", tickerSIC: null, sicVerificado: false, conid: 45444192, nombre: "Vanguard FTSE Developed Markets ETF", ter: null, peso: 0.24 },
+    { isin: null, ticker: "VWO", tickerSIC: null, sicVerificado: false, conid: 27684033, nombre: "Vanguard FTSE Emerging Markets ETF", ter: null, peso: 0.14 },
   ],
   "Satelite Tecnologia": [
-    { isin: null, ticker: "QQQM", tickerSIC: null, sicVerificado: false, nombre: "Invesco NASDAQ 100 ETF", ter: null, peso: 1.0 },
+    { isin: null, ticker: "QQQM", tickerSIC: null, sicVerificado: false, conid: 449738108, nombre: "Invesco NASDAQ 100 ETF", ter: null, peso: 1.0 },
   ],
 };
 
@@ -314,7 +366,7 @@ const INSTRUMENTOS_EEUU: Partial<Record<ClaseActivo, readonly Instrumento[]>> = 
  * antes de la fecha de reparto. QQQ tiene más probabilidad de listarse en el SIC.
  */
 export const ALTERNATIVA_QQQ: Omit<Instrumento, "peso"> = {
-  isin: null, ticker: "QQQ", tickerSIC: null, sicVerificado: false,
+  isin: null, ticker: "QQQ", tickerSIC: null, sicVerificado: false, conid: 320227571,
   nombre: "Invesco QQQ Trust Series 1", ter: null,
 };
 
@@ -331,7 +383,39 @@ export const AJUSTE_MANUAL_EWW: Omit<Instrumento, "peso"> = {
 
 export const UNIVERSO_EEUU: DefinicionUniverso = {
   clave: "EEUU",
-  plazaOrigen: "US",
+  // ---------------------------------------------------------------------------
+  // POR QUÉ ESTE UNIVERSO NO OFRECE SIC · decisión de estrategia fiscal
+  // ---------------------------------------------------------------------------
+  // NO es una limitación técnica. Varios ETFs domiciliados en EE.UU. SÍ cotizan
+  // en el Sistema Internacional de Cotizaciones —VOO, QQQ y SPY entre ellos— y
+  // comprarlos por ahí sería perfectamente operable.
+  //
+  // La razón es de estrategia: si el cliente va a operar por bolsa mexicana,
+  // conviene que lo haga con los UCITS irlandeses. Por esa vía obtiene las dos
+  // ventajas a la vez —la retención definitiva del 10% del art. 129 LISR Y la
+  // eliminación de la exposición al impuesto sucesorio de EE.UU. para no
+  // residentes—, mientras que un ETF estadounidense comprado por el SIC daría
+  // solo la primera y dejaría viva la segunda: situs estadounidense, exención
+  // de 60,000 USD y tasa marginal de hasta 40%.
+  //
+  // Dicho de otro modo: EE.UU. por SIC es la peor casilla de la matriz, porque
+  // paga el costo sucesorio sin comprar nada que UCITS no dé mejor. Por eso el
+  // universo EE.UU. existe solo para cuenta en el extranjero, donde el 10% no
+  // está disponible por ninguna vía y la comparación cambia.
+  //
+  // Hay además un obstáculo práctico. Del cotejo en IBKR del 2026-08-26, nueve
+  // de los doce instrumentos SÍ tienen listado en MEXI, pero TRES NO: SGOV, VWO
+  // y QQQM. O sea que la ruta SIC para este universo ni siquiera estaría
+  // completa: habría que sustituir el efectivo, los emergentes y el satélite de
+  // tecnología por otros instrumentos, con lo que dejaría de ser el mismo
+  // portafolio. La decisión de estrategia y la realidad operativa coinciden.
+  //
+  // Si algún día se decide ofrecerlo, esto se revierte agregando "SIC" a
+  // rutasDisponibles, resolviendo esos tres huecos y cotejando las claves de
+  // pizarra contra el ISIN.
+  // ---------------------------------------------------------------------------
+  rutasDisponibles: ["US"],
+  plazaNativa: "US",
   etiquetas: {
     // El manual usa "Acciones Internacionales": desde México, todo lo demás lo es.
     "Acciones Globales": "Acciones Internacionales",
@@ -349,12 +433,10 @@ export const UNIVERSO_EEUU: DefinicionUniverso = {
     a.push(
       "Al ser de distribución y no de acumulación, el análisis REFIPRE difiere del universo UCITS: no hay diferimiento por acumulación, pero sí ingreso por dividendo acumulable año con año.",
     );
-    if (ruta === "SIC") {
-      a.push("Ruta SIC: la operación se liquida en pesos aunque la exposición económica sea en dólares. Verificar reconocimiento de ganancia cambiaria con el fiscalista.");
-      a.push("Ruta SIC: la tasa del 10% del art. 129 LISR está pendiente de confirmación, en particular para ETFs de deuda (el artículo habla de acciones y títulos que las representen).");
-    } else {
-      a.push("Ruta US: la ganancia de capital es acumulable a tasa marginal (hasta 35%); no aplica la retención definitiva del 10% del art. 129 LISR, que exige enajenación en bolsa concesionada en México.");
-    }
+    // Este universo tiene una sola ruta, así que no hay ramificación posible.
+    a.push(
+      "Ruta US: la ganancia de capital es acumulable a tasa marginal (hasta 35%); no aplica la retención definitiva del 10% del art. 129 LISR, que exige enajenación en bolsa concesionada en México. Si el cliente quiere el 10%, la vía es el universo UCITS por ruta SIC, que además elimina el sucesorio.",
+    );
     a.push(
       "VERIFICACIÓN DE CLAVES: este universo no pasa por validación de ticker en el motor, porque se opera directo en mercado estadounidense, donde el ticker es la clave canónica. La responsabilidad de cotejar cada clave recae en la REVISIÓN DEL ASESOR AL GENERAR LA ORDEN, contra la boleta y antes de mandar a la mesa.",
     );
@@ -467,14 +549,18 @@ export function construirPortafolio(args: {
   perfil: PerfilRiesgo;
   ruta: Ruta;
   montoUSD?: number;
-  /**
-   * Solo aplica con ruta "SIC": los instrumentos sin clave verificada y sin
-   * sustituto se enrutan por la plaza de origen en lugar de abortar. Ese sleeve
-   * tributa a tasa marginal, no al 10% — el motor lo deja asentado por posición.
-   */
-  permitirRutaMixta?: boolean;
 }): ResultadoPortafolio {
-  const { universo, fase, perfil, ruta, montoUSD, permitirRutaMixta } = args;
+  // NO existe opción de ruta mixta, y es deliberado. Hubo un flag
+  // `permitirRutaMixta` que enrutaba por la plaza nativa los instrumentos sin
+  // clave de pizarra verificada, en lugar de abortar. Se eliminó: producía un
+  // portafolio rotulado "SIC" con parte de las posiciones ejecutándose en otra
+  // plaza, o sea UN SOLO IPS PARTIDO EN DOS REGÍMENES FISCALES —parte al 10%
+  // del art. 129, parte a tasa marginal de hasta 35%—. Eso no es explicable a
+  // un cliente ni declarable limpio.
+  //
+  // Si falta una clave, el motor aborta y `pendientesSIC()` dice cuál cotejar.
+  // Fallar es preferible a emitir algo válido a medias con una nota al pie.
+  const { universo, fase, perfil, ruta, montoUSD } = args;
   const def = UNIVERSOS[universo];
   if (!def) throw new Error(`Universo desconocido: "${universo}".`);
 
@@ -485,7 +571,21 @@ export function construirPortafolio(args: {
   const base = PORTAFOLIOS[clave];
   if (!base) throw new Error(`No existe portafolio para "${clave}".`);
 
-  bitacora.push(`Universo ${universo}; plaza de origen ${def.plazaOrigen}; ruta solicitada "${ruta}".`);
+  // ── Guard de ruta: elegibilidad ANTES de mirar inventario ──
+  // Una ruta no disponible en este universo es un error de modelo, no de datos
+  // faltantes. Se distingue a propósito del error de claves sin cotejar: aquel
+  // se arregla cargando claves, este no se arregla nunca.
+  if (!def.rutasDisponibles.includes(ruta)) {
+    throw new Error(
+      `El universo ${universo} no se opera por ruta "${ruta}". Rutas disponibles: ` +
+        `${def.rutasDisponibles.join(", ")}. ` +
+        (universo === "EEUU" && ruta === "SIC"
+          ? "Los ETFs domiciliados en EE.UU. no se ofrecen por el SIC: para operar por bolsa mexicana la vía es el universo UCITS, que suma el 10% del art. 129 Y elimina el impuesto sucesorio de EE.UU. Ver la nota de estrategia fiscal en UNIVERSO_EEUU."
+          : "No es una cuestión de claves de pizarra pendientes."),
+    );
+  }
+
+  bitacora.push(`Universo ${universo}; plaza nativa ${def.plazaNativa}; ruta "${ruta}".`);
 
   // ── Liquidez y reescalado ──
   const liquidez = Math.max(LIMITES_FASE[fase].liquidezMin, LIQUIDEZ_PERFIL[perfil]);
@@ -553,9 +653,8 @@ export function construirPortafolio(args: {
   // por separado en el IPS. La consolidación a una línea ocurre al final, para
   // la orden.
   const faltantesSIC: string[] = [];
-  const mixtos = new Set<string>();
   const sustituidos = new Set<string>();
-  type Bruta = { isin: string | null; ticker: string; nombre: string; clase: ClaseActivo; peso: number; rutaEjecucion: PlazaEjecucion };
+  type Bruta = { isin: string | null; conid?: number; ticker: string; nombre: string; clase: ClaseActivo; peso: number; rutaEjecucion: Ruta };
   const brutas = new Map<string, Bruta>();
 
   (Object.keys(asignacionClases) as ClaseActivo[]).forEach((clase) => {
@@ -563,14 +662,17 @@ export function construirPortafolio(args: {
     if (pesoClase <= eps) return;
 
     for (const inst of def.instrumentos[clase] ?? []) {
-      let plaza: PlazaEjecucion = def.plazaOrigen;
+      // La ruta ya ES la plaza: sin abstracción intermedia que resolver.
+      let plaza: Ruta = ruta;
       let ticker = inst.ticker;
       let isin = inst.isin;
+      let conid = inst.conid;
       let nombre = inst.nombre;
 
       if (ruta === "SIC") {
-        // sicVerificado gobierna ÚNICAMENTE esta rama. Por ruta "Origen" no se
-        // consulta: allí el ticker de la plaza de origen es la clave canónica.
+        // sicVerificado gobierna ÚNICAMENTE esta rama. Por rutas "LSE" y "US"
+        // no se consulta: allí el ticker de la plaza ES la clave canónica del
+        // mercado y no hay traducción de pizarra que pueda desviar la orden.
         if (inst.tickerSIC !== null && inst.sicVerificado) {
           plaza = "SIC";
           ticker = inst.tickerSIC;
@@ -579,15 +681,13 @@ export function construirPortafolio(args: {
           plaza = "SIC";
           ticker = s.tickerSIC!;
           isin = s.isin;
+          conid = s.conid; // del sustituto: heredar la del titular apuntaría a otro valor
           nombre = s.nombre;
           if (!sustituidos.has(inst.ticker)) {
             sustituidos.add(inst.ticker);
             bitacora.push(`${inst.ticker} → ${s.ticker} (${s.tickerSIC}) por ruta SIC en ${clase}.`);
             advertencias.push(`SUSTITUCIÓN POR RUTA · ${s.motivo}`);
           }
-        } else if (permitirRutaMixta) {
-          plaza = def.plazaOrigen;
-          mixtos.add(inst.ticker);
         } else {
           faltantesSIC.push(
             `${inst.ticker} (${inst.isin ?? "ISIN por confirmar"})${inst.tickerSIC ? " · clave sin verificar" : " · sin listado SIC"}`,
@@ -600,7 +700,7 @@ export function construirPortafolio(args: {
       const w = pesoClase * inst.peso;
       const prev = brutas.get(llave);
       if (prev) prev.peso += w;
-      else brutas.set(llave, { isin, ticker, nombre, clase, peso: w, rutaEjecucion: plaza });
+      else brutas.set(llave, { isin, conid, ticker, nombre, clase, peso: w, rutaEjecucion: plaza });
     }
   });
 
@@ -645,7 +745,7 @@ export function construirPortafolio(args: {
 
   const posiciones: Posicion[] = [...brutas.values()]
     .filter((p) => p.peso > eps)
-    .map((p) => ({ isin: p.isin, ticker: p.ticker, nombre: p.nombre, clase: p.clase, peso: p.peso, rutaEjecucion: p.rutaEjecucion }))
+    .map((p) => ({ isin: p.isin, conid: p.conid, ticker: p.ticker, nombre: p.nombre, clase: p.clase, peso: p.peso, rutaEjecucion: p.rutaEjecucion }))
     .sort((a, b) => b.peso - a.peso);
 
   // ── Cierre: el reparto tiene que sumar 100% ──
@@ -666,7 +766,7 @@ export function construirPortafolio(args: {
       prev.peso += p.peso;
       if (!prev.clases.includes(p.clase)) prev.clases.push(p.clase);
     } else {
-      porTicker.set(p.ticker, { isin: p.isin, ticker: p.ticker, nombre: p.nombre, peso: p.peso, plaza: p.rutaEjecucion, clases: [p.clase] });
+      porTicker.set(p.ticker, { isin: p.isin, conid: p.conid, ticker: p.ticker, nombre: p.nombre, peso: p.peso, plaza: p.rutaEjecucion, clases: [p.clase] });
     }
   }
   const ordenConsolidada = [...porTicker.values()].sort((a, b) => b.peso - a.peso);
@@ -692,18 +792,11 @@ export function construirPortafolio(args: {
       `Monto ${montoUSD.toLocaleString("es-MX")} USD por debajo del ticket mínimo de ${TICKET_MINIMO_USD.toLocaleString("es-MX")}: con ${ordenConsolidada.length} líneas y piso de 1.5%, la cartera no es operable de forma eficiente.`,
     );
   }
-  if (ruta === "SIC" && mixtos.size > 0) {
-    advertencias.unshift(
-      `RUTA MIXTA · ${[...mixtos].join(", ")} sin listado/clave verificada en el SIC: ese sleeve se ejecuta por ` +
-        `${def.plazaOrigen} y su ganancia tributa a tasa marginal (hasta 35%), no al 10% del art. 129. ` +
-        "Queda asentado por posición en rutaEjecucion.",
-    );
-  }
 
   advertencias.push(...def.advertenciasFiscales(ruta));
 
   return {
-    clave, universo, plazaOrigen: def.plazaOrigen, fase, perfil, ruta, liquidez,
+    clave, universo, plazaNativa: def.plazaNativa, fase, perfil, ruta, liquidez,
     asignacionClases, etiquetasClases: def.etiquetas,
     rentaVariable: rv, rentaFija: rf,
     posiciones, ordenConsolidada,
@@ -715,10 +808,21 @@ export function construirPortafolio(args: {
 /**
  * Captura verificada de claves del SIC para un universo. Llamar al arrancar la app.
  * Cargar SOLO tras cotejo contra el ISIN en el sistema de la casa de bolsa.
+ *
+ * Lanza si el universo no ofrece ruta SIC. Esta era la puerta de atrás por la
+ * que se podía habilitar una combinación conceptualmente inválida cargando
+ * claves de pizarra: si EEUU no se opera por SIC, sus claves no existen.
  */
 export function registrarTickersSIC(universo: Universo, mapa: Record<string, string>): void {
   const def = UNIVERSOS[universo];
   if (!def) throw new Error(`Universo desconocido: "${universo}".`);
+  if (!def.rutasDisponibles.includes("SIC")) {
+    throw new Error(
+      `El universo ${universo} no se opera por ruta SIC, así que no tiene claves de ` +
+        `pizarra que registrar. Cargarlas no habilitaría esa ruta: la restricción es ` +
+        `de estrategia fiscal, no de datos faltantes. Ver la nota en UNIVERSO_${universo}.`,
+    );
+  }
   for (const insts of Object.values(def.instrumentos)) {
     for (const inst of insts ?? []) {
       const clv = inst.isin && mapa[inst.isin] ? mapa[inst.isin] : mapa[inst.ticker];
@@ -733,14 +837,24 @@ export function registrarTickersSIC(universo: Universo, mapa: Record<string, str
 
 /**
  * Diagnóstico: qué falta para poder operar el universo por SIC.
- * Devuelve vacío para un universo ya cotejado. Por ruta "Origen" este
- * diagnóstico es irrelevante: sicVerificado no gobierna esa ruta.
+ * Devuelve vacío para un universo ya cotejado. Por rutas "LSE" y "US" este
+ * diagnóstico es irrelevante: sicVerificado no gobierna esas rutas.
+ *
+ * Lanza si el universo no ofrece SIC, en vez de devolver vacío: un arreglo
+ * vacío se leería como "ya está todo cotejado", que es lo contrario de la
+ * verdad.
  */
 export function pendientesSIC(
   universo: Universo,
 ): Array<{ ticker: string; isin: string | null; tickerSIC: string | null; motivo: string }> {
   const def = UNIVERSOS[universo];
   if (!def) throw new Error(`Universo desconocido: "${universo}".`);
+  if (!def.rutasDisponibles.includes("SIC")) {
+    throw new Error(
+      `El universo ${universo} no se opera por ruta SIC: no hay pendientes de cotejo ` +
+        `que reportar. Ver la nota de estrategia fiscal en UNIVERSO_${universo}.`,
+    );
+  }
   const out: Array<{ ticker: string; isin: string | null; tickerSIC: string | null; motivo: string }> = [];
   const vistos = new Set<string>();
   for (const insts of Object.values(def.instrumentos)) {

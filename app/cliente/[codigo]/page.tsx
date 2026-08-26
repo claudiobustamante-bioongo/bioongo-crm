@@ -2,6 +2,7 @@ import { createClient } from '@/lib/supabase-server';
 import Link from 'next/link';
 import PerfilIA from './PerfilIA';
 import CalcularIPS, { type IPSGuardado } from './CalcularIPS';
+import GenerarPortafolio from './GenerarPortafolio';
 import type { EntradaBitacora } from '@/lib/ips-engine';
 
 /** Los `numeric` de Postgres pueden llegar como texto. */
@@ -116,6 +117,7 @@ export default async function FichaCliente({
 
       <PerfilIA codigo={codigo} inicial={perfilRiesgo?.perfil_ia ?? null} />
       <CalcularIPS codigo={codigo} inicial={ipsGuardado} />
+      <GenerarPortafolio codigo={codigo} />
     </main>
   );
 }

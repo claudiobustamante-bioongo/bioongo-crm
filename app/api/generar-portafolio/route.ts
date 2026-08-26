@@ -2,7 +2,6 @@ import { createClient } from '@/lib/supabase-server';
 import { PERFILES, type PerfilRiesgo } from '@/lib/ips-catalogo';
 import {
   PORTAFOLIOS,
-  RUTAS,
   UNIVERSOS,
   construirPortafolio,
   type Fase,
@@ -35,22 +34,23 @@ import {
  * decide si el cliente queda expuesto al impuesto sucesorio estadounidense;
  * una decisión así no puede ocurrir por defecto.
  *
- * RUTA: obligatoria y sin valor por omisión, igual que `universo`. "Origen"
- * ejecuta en la plaza propia del universo (LSE para UCITS, mercado de EE.UU.
- * para EEUU); "SIC" en el Sistema Internacional de Cotizaciones. La diferencia
- * es fiscal y grande: por SIC aplica la retención definitiva del 10% del art.
- * 129 LISR, mientras que por Origen la ganancia es acumulable a tasa marginal
- * de hasta 35%. Una decisión así no puede quedar a merced de un default.
+ * RUTA: las rutas elegibles dependen del universo y salen de
+ * `UNIVERSOS[universo].rutasDisponibles`, que es la única fuente.
  *
- * La ruta SIC exige claves de pizarra cotejadas contra el ISIN. Hoy solo las
- * tiene el universo UCITS; el universo EEUU las tiene todas pendientes, así que
- * esa combinación se rechaza con 400 y el detalle de lo que falta.
+ *   UCITS → "LSE" o "SIC". Dos opciones, y la diferencia es fiscal y grande:
+ *           por SIC aplica la retención definitiva del 10% del art. 129 LISR,
+ *           por LSE la ganancia es acumulable a tasa marginal de hasta 35%.
+ *           Por eso aquí la ruta es OBLIGATORIA y sin valor por omisión: una
+ *           decisión así no puede quedar a merced de un default.
+ *   EEUU  → "US" únicamente. Al no haber dos opciones fiscales entre las que
+ *           elegir, la regla de "explícito o 400" no aplica: la decisión ya se
+ *           tomó al elegir el universo. Se acepta omitida o como "US".
+ *
+ * Pedir "SIC" sobre el universo EEUU no es un error de datos faltantes sino una
+ * combinación conceptualmente inválida, y se rechaza como tal.
  *
  * Ningún dato del cliente se escribe a logs: solo mensajes genéricos.
  */
-
-/** Rutas válidas, del motor. No hay default: se exige declararla. */
-const RUTAS_VALIDAS = RUTAS as readonly string[];
 
 /** Fases válidas derivadas del propio motor: si allá se agrega una, aquí entra sola. */
 const FASES_VALIDAS = new Set(
@@ -114,26 +114,66 @@ export async function POST(request: Request) {
 
   // --- Ruta: obligatoria, sin default --------------------------------------
 
+  // Las rutas elegibles las declara el universo; no hay lista global.
+  const rutasDelUniverso = UNIVERSOS[universo].rutasDisponibles;
   const rutaCruda = cuerpo?.ruta;
-  if (rutaCruda === undefined || rutaCruda === null || rutaCruda === '') {
-    return Response.json(
-      {
-        error:
-          `Falta ruta. Debe declararse explícitamente como una de: ` +
-          `${RUTAS_VALIDAS.join(', ')}. Por "SIC" aplica la retención ` +
-          `definitiva del 10% del art. 129 LISR; por "Origen" la ganancia es ` +
-          `acumulable a tasa marginal de hasta 35%. No tiene valor por omisión.`,
-      },
-      { status: 400 }
-    );
+  const rutaOmitida =
+    rutaCruda === undefined || rutaCruda === null || rutaCruda === '';
+
+  let ruta: Ruta;
+
+  if (rutasDelUniverso.length === 1) {
+    // Un solo destino posible: no hay decisión fiscal que tomar aquí, se tomó
+    // al elegir el universo. Se acepta omitida, pero no se acepta otra.
+    const unica = rutasDelUniverso[0]!;
+    if (!rutaOmitida && rutaCruda !== unica) {
+      return Response.json(
+        {
+          error:
+            `El universo ${universo} no se opera por ruta "${String(rutaCruda)}": ` +
+            `su única ruta es "${unica}". ` +
+            (universo === 'EEUU' && rutaCruda === 'SIC'
+              ? 'Los ETFs domiciliados en EE.UU. no se ofrecen por el SIC. No es una ' +
+                'limitación técnica: para operar por bolsa mexicana la vía es el ' +
+                'universo UCITS, que suma la retención del 10% del art. 129 Y elimina ' +
+                'la exposición al impuesto sucesorio de EE.UU., mientras que un ETF ' +
+                'estadounidense por SIC daría solo lo primero.'
+              : 'La restricción es del modelo, no de claves de pizarra pendientes.'),
+        },
+        { status: 400 }
+      );
+    }
+    ruta = unica;
+  } else {
+    // Varias rutas: obligatoria y explícita, porque la elección es fiscal.
+    if (rutaOmitida) {
+      return Response.json(
+        {
+          error:
+            `Falta ruta. Para el universo ${universo} debe declararse ` +
+            `explícitamente como una de: ${rutasDelUniverso.join(', ')}. Por ` +
+            `"SIC" aplica la retención definitiva del 10% del art. 129 LISR; ` +
+            `por "LSE" la ganancia es acumulable a tasa marginal de hasta 35%. ` +
+            `No tiene valor por omisión.`,
+        },
+        { status: 400 }
+      );
+    }
+    if (
+      typeof rutaCruda !== 'string' ||
+      !(rutasDelUniverso as readonly string[]).includes(rutaCruda)
+    ) {
+      return Response.json(
+        {
+          error:
+            `ruta debe ser una de: ${rutasDelUniverso.join(', ')} para el ` +
+            `universo ${universo}.`,
+        },
+        { status: 400 }
+      );
+    }
+    ruta = rutaCruda as Ruta;
   }
-  if (typeof rutaCruda !== 'string' || !RUTAS_VALIDAS.includes(rutaCruda)) {
-    return Response.json(
-      { error: `ruta debe ser una de: ${RUTAS_VALIDAS.join(', ')}.` },
-      { status: 400 }
-    );
-  }
-  const ruta = rutaCruda as Ruta;
 
   const supabase = await createClient();
 
