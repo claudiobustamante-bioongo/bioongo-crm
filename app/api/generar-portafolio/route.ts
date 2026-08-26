@@ -248,8 +248,9 @@ export async function POST(request: Request) {
   }
 
   // `limitesOk: false` NO aborta: el motor señala y no ajusta. La fila se
-  // guarda con sus validaciones para que el incumplimiento quede en el
-  // histórico, y la respuesta lo lleva en `limitesOk` y `advertencias`.
+  // guarda con sus validaciones, advertencias y bitácora para que el
+  // incumplimiento quede completo en el histórico: qué límite se rompió, con
+  // qué texto se le explicó al Asesor y qué hizo el motor por dentro.
 
   // --- 6. Guardado ----------------------------------------------------------
 
@@ -268,6 +269,12 @@ export async function POST(request: Request) {
       renta_variable_pct: aPct(resultado.rentaVariable),
       tech_pct: aPct(resultado.asignacionClases['Satelite Tecnologia']),
       validaciones: resultado.validaciones,
+      // Sin estas dos, un portafolio con límites incumplidos quedaría en el
+      // histórico sin el texto que explica cuáles, y se perdería el rastro de
+      // las sustituciones de ruta y de las posiciones que absorbió el piso de
+      // 1.5%. La bitácora es el porqué; las validaciones solo el qué.
+      advertencias: resultado.advertencias,
+      bitacora: resultado.bitacora,
       fecha_generacion: new Date().toISOString(),
     })
     .select('id, fecha_generacion')
