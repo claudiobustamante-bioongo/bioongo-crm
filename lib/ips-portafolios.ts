@@ -55,6 +55,12 @@ export type PlazaOrigen = "LSE" | "US";
  */
 export type Ruta = "Origen" | "SIC";
 
+/**
+ * Las dos rutas de ejecución. Fuente única para el selector del asesor y para
+ * validar lo que llega a la API: si cambia el tipo, aquí falla la compilación.
+ */
+export const RUTAS: readonly Ruta[] = ["Origen", "SIC"];
+
 /** Plaza concreta por la que termina ejecutándose una posición. */
 export type PlazaEjecucion = PlazaOrigen | "SIC";
 
@@ -396,6 +402,28 @@ export const TOPES: Readonly<Record<PerfilRiesgo, Readonly<Record<string, number
 // entra a rv para rvMax por fase y para el tope rv por perfil, y además tiene
 // su propio tope. Por eso vive en un campo separado sin salirse del 100.
 // ============================================================================
+
+// ---------------------------------------------------------------------------
+// PENDIENTE DE METODOLOGÍA · perfil "Libre de Riesgo"
+// ---------------------------------------------------------------------------
+// Los cinco portafolios de Libre de Riesgo son P(100, 0, 0, 0, 0): el 100% del
+// capital invertible va al sleeve de deuda gubernamental, que NO es de plazo
+// corto. En UCITS eso mete DTLA (Tesoro 20+ años) al 18-19% del portafolio; en
+// EE.UU., VGIT (plazo intermedio, ~5 años de duración) al 21-22%.
+//
+// El resultado es que el perfil más conservador del catálogo —al que se llega
+// por `no_puede_perder`— recibe la mayor exposición a riesgo de tasa de todo el
+// sistema. Un fondo de 20+ años perdió más del 30% en 2022. Los límites del
+// 7.5.2 no lo detectan porque el tope `gob` de Libre de Riesgo es 1.00: la
+// metodología acota CUÁNTA deuda gubernamental, nunca de qué plazo.
+//
+// Propuesta a definir con el manual: Libre de Riesgo como 100% efectivo /
+// money market (IB01 en UCITS, SGOV en EE.UU.), o bien un tope de duración
+// dentro del sleeve gubernamental por perfil. Requiere decisión de metodología,
+// no de código: cambiar P(100,0,0,0,0) altera las cinco filas.
+//
+// Levantado el 2026-08-26 al conectar el motor con /api/generar-portafolio.
+// ---------------------------------------------------------------------------
 
 type Base = { gob: number; corp: number; hy: number; global: number; tech: number };
 
