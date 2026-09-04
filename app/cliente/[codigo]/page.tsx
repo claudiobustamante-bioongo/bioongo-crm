@@ -70,6 +70,26 @@ export default async function FichaCliente({
       }
     : null;
 
+  // La cuenta conjunta es una relación entre cuentas, no una fusión de titulares:
+  // el expediente KYC/PLD de cada uno vive en su propio registro de `clientes`.
+  // Aquí solo se lee lo mínimo para nombrar y enlazar al cotitular.
+  //
+  // No se trae `status` a propósito: en este modelo el status describe la cuenta
+  // IBKR, no a la persona. Un titular puede tener su cuenta individual cerrada y
+  // seguir operando la conjunta, así que marcarlo "inactivo" aquí sería falso.
+  const { data: cotitular } = cliente.es_conjunta && cliente.codigo_cotitular
+    ? await supabase
+        .from('clientes')
+        .select('codigo_cliente, nombre, apellido_paterno, apellido_materno, cuenta_ibkr')
+        .eq('codigo_cliente', cliente.codigo_cotitular)
+        .maybeSingle()
+    : { data: null };
+
+  const nombreCotitular = cotitular
+    ? [cotitular.nombre, cotitular.apellido_paterno, cotitular.apellido_materno]
+        .filter(Boolean).join(' ')
+    : '';
+
   const nombre = [cliente.nombre, cliente.apellido_paterno, cliente.apellido_materno]
     .filter(Boolean).join(' ');
 
@@ -93,9 +113,39 @@ export default async function FichaCliente({
       <Link href="/" className="text-sm text-slate-500 hover:text-slate-800">← Volver a la lista</Link>
 
       <div className="flex justify-between items-start mt-4 mb-6">
-        <h1 className="text-2xl font-semibold">
-          {nombre || <span className="text-slate-400 italic">Sin nombre capturado</span>}
-        </h1>
+        <div>
+          <h1 className="text-2xl font-semibold">
+            {nombre || <span className="text-slate-400 italic">Sin nombre capturado</span>}
+          </h1>
+
+          {cliente.es_conjunta && (
+            <p className="flex flex-wrap items-center gap-2 mt-1.5 text-sm text-slate-600">
+              <span className="inline-block px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700">
+                Cuenta conjunta
+              </span>
+              {cotitular ? (
+                <span>
+                  Cotitular:{' '}
+                  <Link
+                    href={`/cliente/${cotitular.codigo_cliente}`}
+                    className="text-slate-900 underline underline-offset-2 hover:text-slate-600"
+                  >
+                    {nombreCotitular || 'Sin nombre capturado'}
+                  </Link>{' '}
+                  ({cotitular.codigo_cliente}
+                  {cotitular.cuenta_ibkr ? ` · IBKR: ${cotitular.cuenta_ibkr}` : ''})
+                </span>
+              ) : cliente.codigo_cotitular ? (
+                <span className="text-amber-700">
+                  Cotitular {cliente.codigo_cotitular} no encontrado
+                </span>
+              ) : (
+                <span className="text-amber-700">Sin cotitular capturado</span>
+              )}
+            </p>
+          )}
+        </div>
+
         <Link
           href={`/cliente/${codigo}/editar`}
           className="bg-slate-900 text-white px-4 py-2 rounded text-sm hover:bg-slate-700"
