@@ -1,5 +1,6 @@
 import { createClient } from '@/lib/supabase-server';
 import { PERFILES, type PerfilRiesgo } from '@/lib/ips-catalogo';
+import { registrarEvento } from '@/lib/bitacora';
 
 /**
  * POST /api/ajustar-ips
@@ -70,7 +71,7 @@ export async function POST(request: Request) {
   // reciente. Se escribe por `id` para no tocar otras evaluaciones del cliente.
   const { data: perfil, error: errorLectura } = await supabase
     .from('perfil_riesgo')
-    .select('id, resultado_perfil')
+    .select('id, resultado_perfil, perfil_ajustado')
     .eq('codigo_cliente', codigoCliente)
     .order('fecha_evaluacion', { ascending: false, nullsFirst: false })
     .limit(1)
@@ -136,6 +137,30 @@ export async function POST(request: Request) {
     console.error('ajustar-ips: fallo al guardar el ajuste.');
     return Response.json({ error: 'No se pudo guardar el ajuste.' }, { status: 500 });
   }
+
+  // --- Bitácora -------------------------------------------------------------
+
+  // El motivo es el comentario del asesor tal cual lo escribió: es la única
+  // constancia de por qué su criterio se apartó del motor. Cuando se retira el
+  // ajuste sin comentario, el motivo lo dice explícitamente en vez de quedar
+  // vacío.
+  await registrarEvento(supabase, {
+    entidad: 'perfil_riesgo',
+    entidadId: perfil.id,
+    accion: 'ajuste_perfil_asesor',
+    motivo:
+      comentario ??
+      'El asesor retiró el ajuste manual; el perfil vuelve al calculado por el motor.',
+    usuario: user.email ?? user.id,
+    campo: 'perfil_ajustado',
+    valorAnterior: perfil.perfil_ajustado ?? null,
+    valorNuevo: perfilAjustado,
+    metadata: {
+      codigo_cliente: codigoCliente,
+      perfil_motor: perfil.resultado_perfil,
+      difiere_del_motor: difiereDelMotor,
+    },
+  });
 
   return Response.json({ codigo_cliente: codigoCliente, ...guardado });
 }

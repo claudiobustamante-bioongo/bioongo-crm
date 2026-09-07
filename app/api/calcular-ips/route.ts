@@ -1,5 +1,6 @@
 import { createClient } from '@/lib/supabase-server';
 import { calcularPerfilIPS, type IPSInputs } from '@/lib/ips-engine';
+import { registrarEvento } from '@/lib/bitacora';
 
 /**
  * POST /api/calcular-ips
@@ -75,7 +76,7 @@ export async function POST(request: Request) {
     // El select debe ser un literal: supabase-js infiere los tipos parseando la
     // cadena, y una concatenación en runtime le deja `GenericStringError`.
     .select(
-      'id, tolerancia_perdida, reaccion_caida_10, negocio_propio, percepcion_riesgo_empleo, prefiere_ingreso_seguro, no_puede_perder, colchon_liquidez, dependientes, situacion_habitacional, tiene_ahorros, ahorros, hipoteca, otras_deudas, objetivo_inversion, ganancia_deseada, horizonte'
+      'id, resultado_perfil, tolerancia_perdida, reaccion_caida_10, negocio_propio, percepcion_riesgo_empleo, prefiere_ingreso_seguro, no_puede_perder, colchon_liquidez, dependientes, situacion_habitacional, tiene_ahorros, ahorros, hipoteca, otras_deudas, objetivo_inversion, ganancia_deseada, horizonte'
     )
     .eq('codigo_cliente', codigoCliente)
     .order('fecha_evaluacion', { ascending: false, nullsFirst: false })
@@ -182,7 +183,27 @@ export async function POST(request: Request) {
     );
   }
 
-  // --- 6. Respuesta ---------------------------------------------------------
+  // --- 6. Bitácora ----------------------------------------------------------
+
+  // Después del guardado y no antes: solo se asienta lo que efectivamente quedó
+  // escrito. Si el update hubiera fallado, la ruta ya salió por 500 y aquí no
+  // se llega.
+  await registrarEvento(supabase, {
+    entidad: 'perfil_riesgo',
+    entidadId: perfil.id,
+    accion: 'calculo_ips',
+    motivo:
+      `Cálculo del perfil IPS con el motor. Resultado: ${resultado.perfilFinal}, ` +
+      `fase ${resultado.fase}, puntuación ponderada ${resultado.puntuacionPonderada}.`,
+    usuario: user.email ?? user.id,
+    campo: 'resultado_perfil',
+    valorAnterior: perfil.resultado_perfil ?? null,
+    valorNuevo: resultado.perfilFinal,
+    // `resultado` ya trae dentro la bitácora del motor, así que no se duplica.
+    metadata: { codigo_cliente: codigoCliente, resultado },
+  });
+
+  // --- 7. Respuesta ---------------------------------------------------------
 
   return Response.json({
     codigo_cliente: codigoCliente,

@@ -8,6 +8,7 @@ import {
   type Ruta,
   type Universo,
 } from '@/lib/ips-portafolios';
+import { registrarEvento } from '@/lib/bitacora';
 
 /**
  * POST /api/generar-portafolio
@@ -333,7 +334,27 @@ export async function POST(request: Request) {
     );
   }
 
-  // --- 7. Respuesta ---------------------------------------------------------
+  // --- 7. Bitácora ----------------------------------------------------------
+
+  await registrarEvento(supabase, {
+    entidad: 'portafolios',
+    entidadId: guardado.id,
+    accion: 'generacion_portafolio',
+    motivo:
+      `Portafolio generado sobre el universo ${universo} por ruta ${ruta}. ` +
+      `Perfil ${resultado.perfil} (${hayAjuste ? 'ajuste del asesor' : 'motor'}), ` +
+      `fase ${resultado.fase}.`,
+    usuario: user.email ?? user.id,
+    metadata: {
+      codigo_cliente: codigoCliente,
+      universo,
+      ruta,
+      perfil_origen: hayAjuste ? 'ajuste_asesor' : 'motor',
+      posiciones: resultado.posiciones,
+    },
+  });
+
+  // --- 8. Respuesta ---------------------------------------------------------
 
   return Response.json({
     id: guardado.id,
