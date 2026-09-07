@@ -3,6 +3,7 @@ import Link from 'next/link';
 import PerfilIA from './PerfilIA';
 import CalcularIPS, { type IPSGuardado } from './CalcularIPS';
 import GenerarPortafolio from './GenerarPortafolio';
+import EvaluarEBR from './EvaluarEBR';
 import type { EntradaBitacora } from '@/lib/ips-engine';
 import { evaluarRevisionAnual, formatearFecha } from '@/lib/revision-anual';
 
@@ -260,6 +261,7 @@ export default async function FichaCliente({
 
       <PerfilIA codigo={codigo} inicial={perfilRiesgo?.perfil_ia ?? null} />
       <CalcularIPS codigo={codigo} inicial={ipsGuardado} />
+      <EvaluarEBR codigo={codigo} />
       <GenerarPortafolio codigo={codigo} />
     </main>
   );

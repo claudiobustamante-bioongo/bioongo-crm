@@ -31,7 +31,8 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 export type AccionBitacora =
   | 'calculo_ips'
   | 'generacion_portafolio'
-  | 'ajuste_perfil_asesor';
+  | 'ajuste_perfil_asesor'
+  | 'evaluacion_ebr';
 
 export interface EventoBitacora {
   /** Tabla afectada. Debe coincidir con la que usan los triggers. */

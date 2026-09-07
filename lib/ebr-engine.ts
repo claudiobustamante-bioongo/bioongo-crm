@@ -615,13 +615,26 @@ export function construirMatriz(
   if (pais) {
     factores.push(fila('PAÍS DE NACIMIENTO', (inputs.pais_nacimiento ?? '').toUpperCase(), pais.opcion));
   } else {
+    // «Dato ausente» y «valor no reconocido» son huecos distintos y se corrigen
+    // distinto: el primero se captura, el segundo se investiga contra el
+    // catálogo. La observación ya los distinguía; el motivo preliminar no, y es
+    // el que el revisor lee primero. Se arma una sola vez, como en
+    // `factorConRespaldo`, para que los dos textos no puedan volver a divergir.
+    const ausente = !inputs.pais_nacimiento;
     anotar(
       ctx,
       'PAÍS DE NACIMIENTO',
-      `${inputs.pais_nacimiento ? `«${inputs.pais_nacimiento}» no está en el catálogo` : 'dato ausente'}. ` +
+      `${ausente ? 'dato ausente' : `«${inputs.pais_nacimiento}» no está en el catálogo`}. ` +
         'Se aplicó el default de la spec §10 (P2 × I1 = 2).',
     );
-    marcarPreliminar(ctx, 'País de nacimiento no reconocido en el catálogo.');
+    // El motivo nombra además la consecuencia sobre la matriz, para que no se
+    // confunda con el que emite el Supuesto 2 sobre el mismo campo ausente.
+    marcarPreliminar(
+      ctx,
+      ausente
+        ? 'No se capturó el país de nacimiento: la matriz usó el default de la spec §10.'
+        : `País de nacimiento «${inputs.pais_nacimiento}» no reconocido en el catálogo de la matriz.`,
+    );
     factores.push(
       fila('PAÍS DE NACIMIENTO', `${inputs.pais_nacimiento ?? 'SIN DATO'} (default)`, {
         probabilidad: 2,

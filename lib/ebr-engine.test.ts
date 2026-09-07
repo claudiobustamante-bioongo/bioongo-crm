@@ -295,3 +295,61 @@ test('La entidad se imprime como se capturó, con acentos', () => {
   assert.equal(entidad?.opcion_seleccionada, 'CIUDAD DE MÉXICO');
   assert.equal(entidad?.puntaje, 9);
 });
+
+test('País de nacimiento ausente y no reconocido dan motivos preliminares distintos', () => {
+  // Los dos huecos caen al mismo default de la matriz, pero se corrigen
+  // distinto: uno se captura y el otro se investiga contra el catálogo. El
+  // motivo preliminar es lo que el revisor lee primero, y llegó a decir
+  // «no reconocido en el catálogo» cuando el campo venía vacío.
+  const sinDato = evaluarEBR(base({ pais_nacimiento: null }), AHORA);
+  const raro = evaluarEBR(base({ pais_nacimiento: 'Wakanda' }), AHORA);
+
+  // El motivo que emite la matriz. El campo vacío produce además otro por el
+  // Supuesto 2; ese se comprueba en el test siguiente.
+  const motivoMatriz = (r: ReturnType<typeof evaluarEBR>) =>
+    r.motivos_preliminar.filter((m) => /matriz/i.test(m));
+
+  // Un motivo de matriz por cada gap, no dos textos para el mismo hecho.
+  assert.equal(motivoMatriz(sinDato).length, 1);
+  assert.equal(motivoMatriz(raro).length, 1);
+
+  assert.match(motivoMatriz(sinDato)[0], /no se capturó/i);
+  assert.doesNotMatch(
+    motivoMatriz(sinDato)[0],
+    /no reconocido/i,
+    'un campo vacío no es un valor que el catálogo desconozca',
+  );
+
+  assert.match(motivoMatriz(raro)[0], /no reconocido/i);
+  assert.match(motivoMatriz(raro)[0], /Wakanda/, 'el motivo nombra el valor que se rechazó');
+
+  // La observación ya distinguía las dos ramas: no se rompe al arreglar el motivo.
+  const obs = (r: ReturnType<typeof evaluarEBR>) =>
+    r.observaciones.find((o) => o.factor === 'PAÍS DE NACIMIENTO')?.nota ?? '';
+  assert.match(obs(sinDato), /dato ausente/);
+  assert.match(obs(raro), /«Wakanda» no está en el catálogo/);
+
+  // Y el default de la spec §10 sigue aplicándose igual en ambos casos.
+  for (const r of [sinDato, raro]) {
+    const f = r.matriz_factores.find((x) => x.factor === 'PAÍS DE NACIMIENTO');
+    assert.equal(f?.puntaje, 2);
+    assert.equal(r.evaluacion_preliminar, true);
+  }
+});
+
+test('El país ausente no se confunde con el motivo que emite el Supuesto 2', () => {
+  // Un solo campo vacío produce dos consecuencias distintas —la matriz imputa,
+  // el Supuesto 2 queda sin evaluar— y cada una asienta su propio motivo. Que
+  // sean dos es correcto; que digan lo mismo, no.
+  const r = evaluarEBR(base({ pais_nacimiento: null }), AHORA);
+  const motivos = r.motivos_preliminar.filter((m) => /país de nacimiento/i.test(m));
+
+  assert.equal(motivos.length, 2);
+  assert.equal(new Set(motivos).size, 2, 'los dos motivos no pueden ser el mismo texto');
+  assert.ok(motivos.some((m) => /matriz/i.test(m)));
+  assert.ok(motivos.some((m) => /Anexo 2/.test(m)));
+
+  // El supuesto queda inactivo por no evaluable, no por descartado.
+  assert.equal(r.supuestos_evaluados[1].activo, false);
+  assert.match(r.supuestos_evaluados[1].detalle, /no evaluable/i);
+});
