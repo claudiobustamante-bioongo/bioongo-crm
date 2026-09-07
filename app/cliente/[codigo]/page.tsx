@@ -4,6 +4,7 @@ import PerfilIA from './PerfilIA';
 import CalcularIPS, { type IPSGuardado } from './CalcularIPS';
 import GenerarPortafolio from './GenerarPortafolio';
 import type { EntradaBitacora } from '@/lib/ips-engine';
+import { evaluarRevisionAnual, formatearFecha } from '@/lib/revision-anual';
 
 /** Los `numeric` de Postgres pueden llegar como texto. */
 function aNumero(valor: unknown): number | null {
@@ -93,6 +94,9 @@ export default async function FichaCliente({
   const nombre = [cliente.nombre, cliente.apellido_paterno, cliente.apellido_materno]
     .filter(Boolean).join(' ');
 
+  const revision = evaluarRevisionAnual(cliente);
+  const cartaFirmada = Boolean(cliente.carta_sofisticado_firmada);
+
   const campos = [
     ['Código', cliente.codigo_cliente],
     ['Status', cliente.status],
@@ -164,6 +168,95 @@ export default async function FichaCliente({
           </div>
         ))}
       </dl>
+
+      <section className="mt-8">
+        <h2 className="text-lg font-semibold mb-3">Cumplimiento</h2>
+
+        <div className="border border-slate-200 rounded-lg divide-y divide-slate-100">
+          <div className="flex px-4 py-3">
+            <span className="w-48 text-sm text-slate-500">Fecha de aniversario</span>
+            <span className="text-sm text-slate-900">
+              {formatearFecha(cliente.fecha_aniversario) ?? (
+                <span className="text-slate-300">—</span>
+              )}
+            </span>
+          </div>
+
+          <div className="flex px-4 py-3">
+            <span className="w-48 text-sm text-slate-500">Última revisión registrada</span>
+            <span className="text-sm text-slate-900">
+              {formatearFecha(cliente.fecha_ultima_revision) ?? (
+                <span className="text-slate-400 italic">Sin registro previo</span>
+              )}
+            </span>
+          </div>
+
+          <div className="px-4 py-3">
+            <div className="flex">
+              <span className="w-48 text-sm text-slate-500">Estado de la revisión</span>
+              <span
+                className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-medium ${revision.clases}`}
+              >
+                <span className={`w-1.5 h-1.5 rounded-full ${revision.punto}`} />
+                {revision.etiqueta}
+              </span>
+            </div>
+            {revision.detalle && (
+              <p className="text-sm text-slate-600 mt-1.5 ml-48">{revision.detalle}</p>
+            )}
+            {revision.nota && (
+              <p className="text-sm text-slate-500 mt-1.5 ml-48">{revision.nota}</p>
+            )}
+          </div>
+
+          <div className="flex px-4 py-3">
+            <span className="w-48 text-sm text-slate-500">Próxima revisión estimada</span>
+            <span className="text-sm text-slate-900">
+              {formatearFecha(revision.proximaRevision) ?? (
+                <span className="text-slate-400 italic">Sin fecha de aniversario capturada</span>
+              )}
+            </span>
+          </div>
+        </div>
+
+        <h3 className="text-sm font-semibold text-slate-700 mt-6 mb-2">
+          Carta de cliente sofisticado
+        </h3>
+
+        <div className="border border-slate-200 rounded-lg px-4 py-3">
+          {cartaFirmada ? (
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="inline-block px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-700">
+                Carta en expediente
+              </span>
+              {cliente.carta_sofisticado_url ? (
+                <a
+                  href={cliente.carta_sofisticado_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-sm text-slate-900 underline underline-offset-2 hover:text-slate-600"
+                >
+                  Ver carta ↗
+                </a>
+              ) : (
+                <span className="text-sm text-amber-700">
+                  Marcada como firmada, pero sin liga al documento.
+                </span>
+              )}
+            </div>
+          ) : (
+            <div>
+              <span className="inline-block px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-700">
+                Sin carta
+              </span>
+              <p className="text-sm text-slate-600 mt-2">
+                Sin la carta del Anexo 1 Apartado A el cliente es categoría 204, sin
+                importar su patrimonio. La carta es constitutiva.
+              </p>
+            </div>
+          )}
+        </div>
+      </section>
 
       <PerfilIA codigo={codigo} inicial={perfilRiesgo?.perfil_ia ?? null} />
       <CalcularIPS codigo={codigo} inicial={ipsGuardado} />

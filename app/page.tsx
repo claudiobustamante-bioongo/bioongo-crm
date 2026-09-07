@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase-server';
+import { evaluarRevisionAnual } from '@/lib/revision-anual';
 
 export default async function Home({
   searchParams,
@@ -12,7 +13,7 @@ export default async function Home({
 
   let query = supabase
     .from('clientes')
-    .select('codigo_cliente, nombre, apellido_paterno, apellido_materno, status, correo, cuenta_ibkr')
+    .select('codigo_cliente, nombre, apellido_paterno, apellido_materno, status, correo, cuenta_ibkr, fecha_aniversario, fecha_ultima_revision')
     .order('codigo_cliente');
 
   if (status) {
@@ -72,6 +73,7 @@ export default async function Home({
             .filter(Boolean)
             .join(' ');
           const esVigente = c.status === 'vigente';
+          const revision = evaluarRevisionAnual(c);
 
           return (
             <Link key={c.codigo_cliente} href={`/cliente/${c.codigo_cliente}`}>
@@ -85,15 +87,24 @@ export default async function Home({
                 {c.codigo_cliente}
                 {c.cuenta_ibkr ? ` · IBKR: ${c.cuenta_ibkr}` : ''}
               </p>
-              <span
-                className={`inline-block mt-2 px-2 py-0.5 rounded text-xs font-medium ${
-                  esVigente
-                    ? 'bg-green-100 text-green-700'
-                    : 'bg-slate-100 text-slate-500'
-                }`}
-              >
-                {c.status ?? 'sin status'}
-              </span>
+              <div className="flex flex-wrap items-center gap-2 mt-2">
+                <span
+                  className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${
+                    esVigente
+                      ? 'bg-green-100 text-green-700'
+                      : 'bg-slate-100 text-slate-500'
+                  }`}
+                >
+                  {c.status ?? 'sin status'}
+                </span>
+                <span
+                  title={revision.detalle ?? revision.nota ?? undefined}
+                  className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-medium ${revision.clases}`}
+                >
+                  <span className={`w-1.5 h-1.5 rounded-full ${revision.punto}`} />
+                  Revisión: {revision.etiqueta}
+                </span>
+              </div>
             </li>
             </Link>
           );
