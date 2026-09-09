@@ -122,9 +122,50 @@ export async function POST(request: Request) {
     );
   }
 
+  // --- 2b. Listas de control ------------------------------------------------
+
+  // El motor no consulta la base: se le entregan las filas y él las traduce.
+  //
+  // Las VIGENTES definen contra qué se cotejó; las coincidencias definen con
+  // qué resultado. Son dos preguntas distintas y por eso van en dos consultas:
+  // puede haber listas vigentes y ninguna coincidencia, que es justamente el
+  // caso que hoy salía como «no consta la búsqueda» siendo falso.
+  const { data: listasVigentes, error: errorListas } = await supabase
+    .from('listas_control')
+    .select('tipo, fecha_lista, fecha_carga')
+    .eq('vigente', true);
+
+  if (errorListas) {
+    console.error('evaluar-ebr: fallo al leer las listas de control.');
+    return Response.json({ error: 'Error al leer las listas de control.' }, { status: 500 });
+  }
+
+  // NO se filtra por vigencia de la lista: retirar una lista no des-confirma un
+  // match que un humano ya revisó. Las `descartada` sí quedan fuera —son
+  // homónimos ya resueltos— y contarlas reabriría una decisión tomada.
+  const { data: coincidencias, error: errorCoincidencias } = await supabase
+    .from('listas_coincidencias')
+    .select('estado')
+    .eq('codigo_cliente', codigoCliente)
+    .in('estado', ['pendiente', 'confirmada']);
+
+  if (errorCoincidencias) {
+    console.error('evaluar-ebr: fallo al leer las coincidencias de listas.');
+    return Response.json(
+      { error: 'Error al leer las coincidencias contra listas de control.' },
+      { status: 500 }
+    );
+  }
+
   // --- 3. Motor -------------------------------------------------------------
 
-  const inputs = construirInputsEBR({ cliente, kyc, pep, transaccionalidad });
+  const inputs = construirInputsEBR({
+    cliente,
+    kyc,
+    pep,
+    transaccionalidad,
+    listas: { vigentes: listasVigentes ?? [], coincidencias: coincidencias ?? [] },
+  });
 
   let resultado;
   try {

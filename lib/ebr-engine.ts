@@ -63,6 +63,66 @@ export type GradoRiesgo = 'BAJO' | 'ALTO';
 export type Regimen = 'Ordinario' | 'Reforzado';
 export type FuenteOverride = 'automatic' | 'listas_csv_manual' | 'nubarium';
 
+/** Una lista vigente contra la que se corrió el cotejo. */
+export interface ListaCotejadaEBR {
+  /** Espeja `TipoLista` de `lib/listas.ts`: LPB, PEP_NACIONAL, OFAC, SAT_69B, ONU. */
+  tipo: string;
+  /** Fecha de corte de la lista, no la de la carga. */
+  fecha_lista: string;
+  /** Cuándo se corrió el cotejo, que es cuando se cargó la lista. */
+  fecha_cotejo: string;
+}
+
+/**
+ * Estado del cotejo del cliente contra las listas de control cargadas.
+ *
+ * Las coincidencias se cuentan SIN filtrar por vigencia de la lista: retirar
+ * una lista no des-confirma un match que un humano ya revisó y confirmó.
+ */
+export interface CotejoListas {
+  /** Las listas VIGENTES contra las que se cotejó. Vacío = ninguna cargada. */
+  listas: ListaCotejadaEBR[];
+  coincidencias_pendientes: number;
+  coincidencias_confirmadas: number;
+}
+
+/**
+ * Qué tipo de lista cierra cuál de las dos verificaciones de listas del §12.
+ *
+ * SAT_69B NO APARECE, y es el punto entero de tener dos constantes en vez de un
+ * booleano: el 69-B es el listado de contribuyentes con operaciones
+ * presuntamente inexistentes, materia fiscal, no una lista de sanciones.
+ * Cotejarlo es diligencia real y merece constar en el expediente, pero no
+ * satisface ninguna de las dos búsquedas que el Manual exige.
+ */
+const CIERRA_VERIFICACION_LPB: readonly string[] = ['LPB'];
+const CIERRA_VERIFICACION_ONU_OFAC: readonly string[] = ['OFAC', 'ONU'];
+
+/** Los tipos cuyo cotejo permite afirmar que la búsqueda en sanciones se hizo. */
+const LISTAS_DE_SANCIONES: readonly string[] = [
+  ...CIERRA_VERIFICACION_LPB,
+  ...CIERRA_VERIFICACION_ONU_OFAC,
+];
+
+/** Nombre legible por tipo, para los motivos. Espeja el de `/admin/listas`. */
+const NOMBRE_LISTA: Record<string, string> = {
+  LPB: 'Lista de Personas Bloqueadas',
+  PEP_NACIONAL: 'PEP nacionales',
+  OFAC: 'OFAC',
+  SAT_69B: 'SAT 69-B',
+  ONU: 'ONU',
+};
+
+function nombreLista(tipo: string): string {
+  return NOMBRE_LISTA[tipo] ?? tipo;
+}
+
+/** ['A', 'B', 'C'] → 'A, B y C'. */
+function enumerarListas(partes: string[]): string {
+  if (partes.length <= 1) return partes[0] ?? '';
+  return `${partes.slice(0, -1).join(', ')} y ${partes[partes.length - 1]}`;
+}
+
 /** Error de expediente incompleto. Detiene el cálculo, no se degrada a default. */
 export class ErrorEBR extends Error {
   constructor(mensaje: string) {
@@ -145,6 +205,16 @@ export interface EBRInputs {
   override_pep?: boolean;
   override_source?: FuenteOverride;
   override_notes?: string;
+
+  /**
+   * Estado del cotejo contra las listas de control cargadas. Lo arma la ruta
+   * leyendo `listas_control` y `listas_coincidencias`; el motor no consulta.
+   *
+   * De aquí se DERIVA `override_lista_bloqueadas` cuando no viene fijado a
+   * mano, y de aquí sale el texto que dice contra qué se cotejó. Ausente
+   * significa que no se preguntó, no que no haya listas.
+   */
+  cotejo_listas?: CotejoListas;
 
   tipo_persona?: string | null;
 }
@@ -884,16 +954,118 @@ export function determinarGrado(
 // Orquestación
 // ---------------------------------------------------------------------------
 
+/** Lo que el cotejo de listas resuelve para el resto de la evaluación. */
+interface EstadoListas {
+  /** Solo una coincidencia CONFIRMADA lo pone en true. */
+  enListaBloqueadas: boolean;
+  /** ¿Se ejecutó la búsqueda de la verificación 0 (LPB de la SHCP)? */
+  cierraLPB: boolean;
+  /** ¿Y la de la verificación 1 (ONU / OFAC)? */
+  cierraOnuOfac: boolean;
+  /** Fuente a declarar cuando el estado se derivó del cotejo cargado. */
+  fuente: FuenteOverride | null;
+}
+
+/**
+ * Resuelve el estado de listas a partir del override manual o del cotejo.
+ *
+ * UNA COINCIDENCIA PENDIENTE NO ES UNA COINCIDENCIA. Puede ser un homónimo, y
+ * confirmarla es un acto humano que ocurre en la bandeja de /admin/listas.
+ * Tratarla como confirmada elevaría el grado a ALTO y dispararía la suspensión
+ * de operaciones y el reporte de 24 horas contra alguien que quizá solo comparte
+ * apellido. Por eso una pendiente deja la evaluación PRELIMINAR —no puede darse
+ * por concluida— pero no eleva el grado.
+ *
+ * Criterio confirmado por Claudio Bustamante el 9 de septiembre de 2026, y es
+ * el mismo que ya aplican `/api/cargar-lista` y la bandeja de coincidencias.
+ */
+function resolverListas(inputs: EBRInputs, ctx: Contexto): EstadoListas {
+  // 1 · El override capturado a mano manda sobre el cotejo. Es la vía para
+  //     asentar un screening ejecutado fuera del sistema, y quien lo captura
+  //     está declarando que ambas búsquedas se hicieron, no solo una.
+  if (inputs.override_lista_bloqueadas !== undefined) {
+    return {
+      enListaBloqueadas: inputs.override_lista_bloqueadas === true,
+      cierraLPB: true,
+      cierraOnuOfac: true,
+      fuente: null,
+    };
+  }
+
+  const cotejo = inputs.cotejo_listas;
+
+  // 2 · Sin cotejo, o con cotejo pero sin ninguna lista vigente: nada cambia
+  //     respecto del comportamiento anterior.
+  if (!cotejo || cotejo.listas.length === 0) {
+    marcarPreliminar(ctx, 'No consta la búsqueda en listas de personas bloqueadas (SHCP/ONU/OFAC).');
+    return { enListaBloqueadas: false, cierraLPB: false, cierraOnuOfac: false, fuente: null };
+  }
+
+  const tipos = cotejo.listas.map((l) => l.tipo);
+  const cierraLPB = tipos.some((t) => CIERRA_VERIFICACION_LPB.includes(t));
+  const cierraOnuOfac = tipos.some((t) => CIERRA_VERIFICACION_ONU_OFAC.includes(t));
+  const haySanciones = tipos.some((t) => LISTAS_DE_SANCIONES.includes(t));
+
+  const detalle = enumerarListas(
+    cotejo.listas.map((l) => `${nombreLista(l.tipo)} (corte ${l.fecha_lista})`)
+  );
+  // El cotejo más antiguo manda: el conjunto vale lo que su eslabón más viejo.
+  const fechaCotejo = cotejo.listas
+    .map((l) => l.fecha_cotejo)
+    .reduce((min, f) => (f < min ? f : min));
+
+  // 3 · Coincidencia CONFIRMADA. Regla automática del §2: un humano ya revisó
+  //     el careo y dijo que es la persona.
+  if (cotejo.coincidencias_confirmadas > 0) {
+    return { enListaBloqueadas: true, cierraLPB, cierraOnuOfac, fuente: 'listas_csv_manual' };
+  }
+
+  // 4 · Coincidencias PENDIENTES. Ni limpio ni bloqueado: sin resolver.
+  if (cotejo.coincidencias_pendientes > 0) {
+    marcarPreliminar(
+      ctx,
+      `Hay ${cotejo.coincidencias_pendientes} coincidencia(s) PENDIENTE(S) de revisión ` +
+        `contra ${detalle}. Una coincidencia pendiente puede ser un homónimo: no eleva el ` +
+        'grado ni suspende operaciones, pero la evaluación no puede darse por concluida ' +
+        'hasta resolverla en la bandeja de listas de control.'
+    );
+    return { enListaBloqueadas: false, cierraLPB: false, cierraOnuOfac: false, fuente: 'listas_csv_manual' };
+  }
+
+  // 5 · Sin coincidencias, pero ninguna lista de sanciones entre las vigentes.
+  if (!haySanciones) {
+    marcarPreliminar(
+      ctx,
+      `Cotejo ejecutado el ${fechaCotejo} contra ${detalle}, sin coincidencias. Ninguna de ` +
+        'ellas es lista de sanciones —el SAT 69-B es materia fiscal, no PLD—, así que NO ' +
+        'consta la búsqueda en la Lista de Personas Bloqueadas (SHCP) ni en las listas de ' +
+        'la ONU y OFAC.'
+    );
+    return { enListaBloqueadas: false, cierraLPB: false, cierraOnuOfac: false, fuente: 'listas_csv_manual' };
+  }
+
+  // 6 · Sin coincidencias y con sanciones cotejadas. Si falta la LPB, se dice:
+  //     el esfuerzo real consta, la obligación NO se da por cumplida.
+  if (!cierraLPB) {
+    marcarPreliminar(
+      ctx,
+      `Cotejo ejecutado el ${fechaCotejo} contra ${detalle}, sin coincidencias. NO sustituye ` +
+        'la búsqueda en la Lista de Personas Bloqueadas (SHCP), que sigue pendiente y es la ' +
+        'única que cierra la verificación del apartado III.10.'
+    );
+  }
+
+  return { enListaBloqueadas: false, cierraLPB, cierraOnuOfac, fuente: 'listas_csv_manual' };
+}
+
 export function evaluarEBR(inputs: EBRInputs, ahora: Date = new Date()): EBRResultado {
   // §15 antes que nada: expediente incompleto no se calcula.
   validarInputs(inputs);
 
   const ctx: Contexto = { observaciones: [], motivosPreliminar: [] };
 
-  const enListaBloqueadas = inputs.override_lista_bloqueadas === true;
-  if (inputs.override_lista_bloqueadas === undefined) {
-    marcarPreliminar(ctx, 'No consta la búsqueda en listas de personas bloqueadas (SHCP/ONU/OFAC).');
-  }
+  const estadoListas = resolverListas(inputs, ctx);
+  const enListaBloqueadas = estadoListas.enListaBloqueadas;
 
   // PEP: cualquiera de las cuatro declaraciones, o el resultado del screening.
   const esPep =
@@ -936,9 +1108,13 @@ export function evaluarEBR(inputs: EBRInputs, ahora: Date = new Date()): EBRResu
   }
 
   const verificacionesPendientes = VERIFICACIONES.filter((v, i) => {
-    // Las dos primeras se dan por hechas si consta el resultado del screening
-    // de listas; la tercera, si consta la declaración PEP.
-    if (i <= 1) return inputs.override_lista_bloqueadas === undefined;
+    // Cada búsqueda se cierra con SU lista: la 0 solo con la Lista de Personas
+    // Bloqueadas de la SHCP, la 1 con ONU u OFAC. Un booleano único para las dos
+    // daba por ejecutada la de la LPB en cuanto se cotejaba OFAC —o el SAT
+    // 69-B—, que es exactamente lo que no puede pasar: son obligaciones
+    // distintas y solo la primera cubre el apartado III.10.
+    if (i === 0) return !estadoListas.cierraLPB;
+    if (i === 1) return !estadoListas.cierraOnuOfac;
     if (i === 2) return inputs.es_pep_nacional_declarado === null && inputs.override_pep === undefined;
     return true;
   });
@@ -989,7 +1165,10 @@ export function evaluarEBR(inputs: EBRInputs, ahora: Date = new Date()): EBRResu
     observaciones: ctx.observaciones,
 
     fecha_evaluacion: ahora.toISOString().slice(0, 10),
-    override_source: inputs.override_source ?? 'automatic',
+    // La fuente declarada explícitamente manda; si no, se declara de dónde
+    // salió realmente el estado de listas. 'automatic' solo cuando no hubo ni
+    // override ni cotejo, que es cuando el motor no supo nada de listas.
+    override_source: inputs.override_source ?? estadoListas.fuente ?? 'automatic',
     elaboro: ELABORO,
     revisa_autoriza: REVISA_AUTORIZA,
   };
@@ -1005,6 +1184,22 @@ export interface FilasEBR {
   kyc?: Record<string, unknown> | null;
   pep?: Record<string, unknown> | null;
   transaccionalidad?: Record<string, unknown> | null;
+  /**
+   * Filas de `listas_control` (las vigentes) y `listas_coincidencias` (las del
+   * cliente). Las lee la ruta: el motor no consulta la base.
+   *
+   * `undefined` significa que no se preguntó y la evaluación se comporta como
+   * antes de que existieran las listas. Un arreglo vacío en `vigentes` sí es
+   * una respuesta: no hay ninguna lista cargada.
+   */
+  listas?: FilasListas | null;
+}
+
+/** Lo que la ruta lee de las tablas de listas, en crudo. */
+export interface FilasListas {
+  vigentes: Record<string, unknown>[];
+  /** Coincidencias del cliente en estado `pendiente` o `confirmada`. */
+  coincidencias: Record<string, unknown>[];
 }
 
 function texto(valor: unknown): string {
@@ -1037,6 +1232,40 @@ function numeroONull(valor: unknown): number | null {
  * Cuando falta la fila de `pep_listas` no se asume que el cliente no es PEP:
  * los cuatro campos quedan en `null`, que el motor lee como «no consta».
  */
+/**
+ * Filas de listas a `CotejoListas`.
+ *
+ * `fecha_cotejo` sale de `fecha_carga`, no de `fecha_lista`: el cotejo ocurre
+ * al cargar la lista, y son dos fechas que responden preguntas distintas —de
+ * cuándo son los datos, y cuándo se compararon contra la cartera—.
+ *
+ * Las coincidencias llegan ya filtradas por la ruta a `pendiente` y
+ * `confirmada`: una `descartada` es un homónimo que alguien revisó y descartó,
+ * y contarla reabriría una decisión ya tomada.
+ */
+function construirCotejo(filas: FilasListas | null | undefined): CotejoListas | undefined {
+  if (!filas) return undefined;
+
+  const listas: ListaCotejadaEBR[] = filas.vigentes.map((l) => ({
+    tipo: texto(l.tipo),
+    fecha_lista: texto(l.fecha_lista).slice(0, 10),
+    fecha_cotejo: texto(l.fecha_carga).slice(0, 10),
+  }));
+
+  let pendientes = 0;
+  let confirmadas = 0;
+  for (const c of filas.coincidencias) {
+    if (c.estado === 'confirmada') confirmadas++;
+    else if (c.estado === 'pendiente') pendientes++;
+  }
+
+  return {
+    listas,
+    coincidencias_pendientes: pendientes,
+    coincidencias_confirmadas: confirmadas,
+  };
+}
+
 export function construirInputsEBR(filas: FilasEBR): EBRInputs {
   const { cliente, kyc, pep, transaccionalidad } = filas;
 
@@ -1098,6 +1327,8 @@ export function construirInputsEBR(filas: FilasEBR): EBRInputs {
     fecha_cuestionario: textoONull(transaccionalidad?.fecha_declaracion),
 
     documentos_completos: boolONull(cliente.documentos_completos),
+
+    cotejo_listas: construirCotejo(filas.listas),
 
     tipo_persona: 'PERSONA FÍSICA',
   };

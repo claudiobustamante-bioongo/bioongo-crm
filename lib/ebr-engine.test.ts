@@ -9,7 +9,13 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 
-import { ErrorEBR, evaluarEBR, type EBRInputs } from './ebr-engine';
+import {
+  ErrorEBR,
+  VERIFICACIONES,
+  evaluarEBR,
+  type CotejoListas,
+  type EBRInputs,
+} from './ebr-engine';
 
 /** Fecha fija para que la edad y `fecha_evaluacion` no dependan del día. */
 const AHORA = new Date('2026-09-07T12:00:00Z');
@@ -352,4 +358,174 @@ test('El país ausente no se confunde con el motivo que emite el Supuesto 2', ()
   // El supuesto queda inactivo por no evaluable, no por descartado.
   assert.equal(r.supuestos_evaluados[1].activo, false);
   assert.match(r.supuestos_evaluados[1].detalle, /no evaluable/i);
+});
+
+// ---------------------------------------------------------------------------
+// Cotejo contra listas de control
+// ---------------------------------------------------------------------------
+//
+// El motor no consulta la base: recibe el estado del cotejo ya armado. Lo que
+// se prueba aquí es que el esfuerzo real conste SIN dar por cumplida la
+// obligación del apartado III.10, que solo cierra la Lista de Personas
+// Bloqueadas de la SHCP.
+
+/** La verificación 0 es la de la LPB; la 1, la de ONU/OFAC. */
+const VERIF_LPB = VERIFICACIONES[0];
+const VERIF_ONU_OFAC = VERIFICACIONES[1];
+
+function cotejo(sobre: Partial<CotejoListas> = {}): CotejoListas {
+  return {
+    listas: [
+      { tipo: 'OFAC', fecha_lista: '2026-08-31', fecha_cotejo: '2026-09-09' },
+      { tipo: 'SAT_69B', fecha_lista: '2026-07-31', fecha_cotejo: '2026-09-09' },
+    ],
+    coincidencias_pendientes: 0,
+    coincidencias_confirmadas: 0,
+    ...sobre,
+  };
+}
+
+/** Sin override manual: es lo que obliga al motor a mirar el cotejo. */
+function sinOverride(sobre: Partial<EBRInputs> = {}): EBRInputs {
+  return base({ override_lista_bloqueadas: undefined, ...sobre });
+}
+
+test('listas · sin ninguna lista cargada, el motivo queda exactamente como estaba', () => {
+  // Requisito explícito: si no hay nada cargado, no se inventa un texto nuevo.
+  const sinNada = evaluarEBR(sinOverride(), AHORA);
+  assert.ok(
+    sinNada.motivos_preliminar.includes(
+      'No consta la búsqueda en listas de personas bloqueadas (SHCP/ONU/OFAC).'
+    )
+  );
+  assert.equal(sinNada.override_source, 'automatic');
+
+  // Un cotejo con cero listas vigentes es la misma situación, no una distinta.
+  const vacio = evaluarEBR(sinOverride({ cotejo_listas: cotejo({ listas: [] }) }), AHORA);
+  assert.ok(
+    vacio.motivos_preliminar.includes(
+      'No consta la búsqueda en listas de personas bloqueadas (SHCP/ONU/OFAC).'
+    )
+  );
+
+  // Y las dos búsquedas siguen pendientes en ambos casos.
+  for (const r of [sinNada, vacio]) {
+    assert.ok(r.verificaciones_pendientes.includes(VERIF_LPB));
+    assert.ok(r.verificaciones_pendientes.includes(VERIF_ONU_OFAC));
+  }
+});
+
+test('listas · OFAC y SAT 69-B limpios: consta el cotejo, la LPB sigue pendiente', () => {
+  const r = evaluarEBR(sinOverride({ cotejo_listas: cotejo() }), AHORA);
+
+  // Ya no dice que no consta la búsqueda: se hizo, y se dice contra qué.
+  assert.equal(
+    r.motivos_preliminar.includes(
+      'No consta la búsqueda en listas de personas bloqueadas (SHCP/ONU/OFAC).'
+    ),
+    false
+  );
+
+  const motivo = r.motivos_preliminar.find((m) => /Cotejo ejecutado/.test(m));
+  assert.ok(motivo, 'debe constar el cotejo ejecutado');
+  assert.match(motivo, /OFAC \(corte 2026-08-31\)/);
+  assert.match(motivo, /SAT 69-B \(corte 2026-07-31\)/);
+  assert.match(motivo, /2026-09-09/);
+  assert.match(motivo, /NO sustituye/);
+  assert.match(motivo, /Lista de Personas Bloqueadas/);
+
+  // LO CENTRAL: OFAC cierra su verificación, la de la LPB NO. Con un solo
+  // booleano para las dos, esta aserción fallaría y la obligación del III.10
+  // se daría por cumplida sin haberse ejecutado.
+  assert.ok(r.verificaciones_pendientes.includes(VERIF_LPB));
+  assert.equal(r.verificaciones_pendientes.includes(VERIF_ONU_OFAC), false);
+
+  assert.equal(r.en_lista_bloqueadas, false);
+  assert.equal(r.alerta_critica, null);
+  assert.equal(r.grado_riesgo, 'BAJO');
+  assert.equal(r.override_source, 'listas_csv_manual');
+});
+
+test('listas · el SAT 69-B solo no cierra ninguna búsqueda: es materia fiscal', () => {
+  const r = evaluarEBR(
+    sinOverride({
+      cotejo_listas: cotejo({
+        listas: [{ tipo: 'SAT_69B', fecha_lista: '2026-07-31', fecha_cotejo: '2026-09-09' }],
+      }),
+    }),
+    AHORA
+  );
+
+  const motivo = r.motivos_preliminar.find((m) => /Cotejo ejecutado/.test(m));
+  assert.ok(motivo);
+  assert.match(motivo, /Ninguna de ellas es lista de sanciones/);
+
+  // Ninguna de las dos se cierra: el 69-B no es lista de sanciones.
+  assert.ok(r.verificaciones_pendientes.includes(VERIF_LPB));
+  assert.ok(r.verificaciones_pendientes.includes(VERIF_ONU_OFAC));
+});
+
+test('listas · la LPB limpia sí cierra su verificación y no deja motivo', () => {
+  const r = evaluarEBR(
+    sinOverride({
+      cotejo_listas: cotejo({
+        listas: [{ tipo: 'LPB', fecha_lista: '2026-09-01', fecha_cotejo: '2026-09-09' }],
+      }),
+    }),
+    AHORA
+  );
+
+  assert.equal(r.verificaciones_pendientes.includes(VERIF_LPB), false);
+  // La de ONU/OFAC sigue abierta: la LPB no la cubre, igual que al revés.
+  assert.ok(r.verificaciones_pendientes.includes(VERIF_ONU_OFAC));
+
+  // Cotejo limpio contra la lista obligatoria: no hay nada que advertir.
+  assert.equal(
+    r.motivos_preliminar.some((m) => /Cotejo ejecutado/.test(m)),
+    false
+  );
+  assert.equal(r.en_lista_bloqueadas, false);
+});
+
+test('listas · coincidencia CONFIRMADA: ALTO automático y alerta del 10.10', () => {
+  const r = evaluarEBR(
+    sinOverride({
+      cotejo_listas: cotejo({
+        listas: [{ tipo: 'LPB', fecha_lista: '2026-09-01', fecha_cotejo: '2026-09-09' }],
+        coincidencias_confirmadas: 1,
+      }),
+    }),
+    AHORA
+  );
+
+  assert.equal(r.en_lista_bloqueadas, true);
+  assert.equal(r.grado_riesgo, 'ALTO');
+  assert.equal(r.regimen, 'Reforzado');
+  assert.match(r.razon_clasificacion, /Lista de Personas Bloqueadas/);
+  assert.ok(r.alerta_critica);
+  assert.match(r.alerta_critica, /24 horas/);
+});
+
+test('listas · coincidencia PENDIENTE: preliminar, pero sin suspender a nadie', () => {
+  // Una pendiente puede ser un homónimo. Elevar el grado por ella suspendería
+  // las operaciones de alguien que quizá solo comparte apellido; darla por
+  // limpia escondería un match sin revisar. Ni una cosa ni la otra.
+  const r = evaluarEBR(
+    sinOverride({ cotejo_listas: cotejo({ coincidencias_pendientes: 2 }) }),
+    AHORA
+  );
+
+  assert.equal(r.en_lista_bloqueadas, false);
+  assert.equal(r.grado_riesgo, 'BAJO');
+  assert.equal(r.alerta_critica, null);
+
+  const motivo = r.motivos_preliminar.find((m) => /PENDIENTE/.test(m));
+  assert.ok(motivo, 'la pendiente tiene que constar');
+  assert.match(motivo, /2 coincidencia/);
+  assert.match(motivo, /homónimo/);
+
+  assert.equal(r.evaluacion_preliminar, true);
+  // Sin resolver el match, ninguna búsqueda puede darse por concluida.
+  assert.ok(r.verificaciones_pendientes.includes(VERIF_LPB));
+  assert.ok(r.verificaciones_pendientes.includes(VERIF_ONU_OFAC));
 });
