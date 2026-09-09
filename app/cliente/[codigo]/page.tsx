@@ -3,8 +3,9 @@ import Link from 'next/link';
 import PerfilIA from './PerfilIA';
 import CalcularIPS, { type IPSGuardado } from './CalcularIPS';
 import GenerarPortafolio from './GenerarPortafolio';
-import EvaluarEBR from './EvaluarEBR';
+import EvaluarEBR, { type EBRGuardado } from './EvaluarEBR';
 import type { EntradaBitacora } from '@/lib/ips-engine';
+import type { FactorMatriz, ObservacionEBR, SupuestoEvaluado } from '@/lib/ebr-engine';
 import { evaluarRevisionAnual, formatearFecha } from '@/lib/revision-anual';
 
 /** Los `numeric` de Postgres pueden llegar como texto. */
@@ -12,6 +13,11 @@ function aNumero(valor: unknown): number | null {
   if (valor === null || valor === undefined) return null;
   const n = typeof valor === 'number' ? valor : Number(valor);
   return Number.isFinite(n) ? n : null;
+}
+
+/** Los `jsonb` de Postgres llegan sin tipo: se acotan al leerlos, no al usarlos. */
+function comoArreglo<T>(valor: unknown): T[] {
+  return Array.isArray(valor) ? (valor as T[]) : [];
 }
 
 export const dynamic = 'force-dynamic';
@@ -69,6 +75,51 @@ export default async function FichaCliente({
         comentarioAsesor: perfilRiesgo.comentario_asesor,
         ajustadoPor: perfilRiesgo.ajustado_por,
         fechaAjuste: perfilRiesgo.fecha_ajuste,
+      }
+    : null;
+
+  // `ebr_evaluaciones` es un histórico append-only: la vigente es la de
+  // `fecha_evaluacion` más reciente, igual que ordena /api/evaluar-ebr al leer
+  // el grado anterior. La columna es NOT NULL, así que no hace falta `nullsFirst`.
+  //
+  // No se pide `entrada`: es la fotografía del expediente (RFC, CURP,
+  // domicilio) y este panel no la pinta. Mandarla al navegador sería exponer
+  // datos personales que nadie va a leer.
+  const { data: ebrReciente } = await supabase
+    .from('ebr_evaluaciones')
+    .select(
+      'id, fecha_evaluacion, grado_riesgo, regimen, razon_clasificacion, fundamento_clasificacion, supuestos_evaluados, matriz_factores, matriz_puntaje_total, matriz_banda, es_pep, pep_extranjero, aplica_medidas_pep, requiere_aprobacion_oficial, en_lista_bloqueadas, alerta_critica, evaluacion_preliminar, motivos_preliminar, verificaciones_pendientes, observaciones, override_source, elaboro, revisa_autoriza'
+    )
+    .eq('codigo_cliente', codigo)
+    .order('fecha_evaluacion', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  const ebrGuardado: EBRGuardado | null = ebrReciente
+    ? {
+        id: ebrReciente.id,
+        fechaEvaluacion: ebrReciente.fecha_evaluacion,
+        gradoRiesgo: ebrReciente.grado_riesgo,
+        regimen: ebrReciente.regimen,
+        razonClasificacion: ebrReciente.razon_clasificacion,
+        fundamentoClasificacion: ebrReciente.fundamento_clasificacion,
+        supuestosEvaluados: comoArreglo<SupuestoEvaluado>(ebrReciente.supuestos_evaluados),
+        matrizFactores: comoArreglo<FactorMatriz>(ebrReciente.matriz_factores),
+        matrizPuntajeTotal: aNumero(ebrReciente.matriz_puntaje_total),
+        matrizBanda: ebrReciente.matriz_banda,
+        esPep: ebrReciente.es_pep,
+        pepExtranjero: ebrReciente.pep_extranjero,
+        aplicaMedidasPep: ebrReciente.aplica_medidas_pep,
+        requiereAprobacionOficial: ebrReciente.requiere_aprobacion_oficial,
+        enListaBloqueadas: ebrReciente.en_lista_bloqueadas,
+        alertaCritica: ebrReciente.alerta_critica,
+        evaluacionPreliminar: ebrReciente.evaluacion_preliminar,
+        motivosPreliminar: comoArreglo<string>(ebrReciente.motivos_preliminar),
+        verificacionesPendientes: comoArreglo<string>(ebrReciente.verificaciones_pendientes),
+        observaciones: comoArreglo<ObservacionEBR>(ebrReciente.observaciones),
+        overrideSource: ebrReciente.override_source,
+        elaboro: ebrReciente.elaboro,
+        revisaAutoriza: ebrReciente.revisa_autoriza,
       }
     : null;
 
@@ -261,7 +312,7 @@ export default async function FichaCliente({
 
       <PerfilIA codigo={codigo} inicial={perfilRiesgo?.perfil_ia ?? null} />
       <CalcularIPS codigo={codigo} inicial={ipsGuardado} />
-      <EvaluarEBR codigo={codigo} />
+      <EvaluarEBR codigo={codigo} inicial={ebrGuardado} />
       <GenerarPortafolio codigo={codigo} />
     </main>
   );

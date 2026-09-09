@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import type { EBRResultado, FactorMatriz, SupuestoEvaluado } from '@/lib/ebr-engine';
+import type { EBRResultado, FactorMatriz, ObservacionEBR, SupuestoEvaluado } from '@/lib/ebr-engine';
 
 // `import type` se borra al compilar. Importa aquí más que en otros paneles:
 // importar el motor como valor arrastraría al bundle del cliente el Anexo 2
@@ -19,6 +19,58 @@ import type { EBRResultado, FactorMatriz, SupuestoEvaluado } from '@/lib/ebr-eng
 type Respuesta = EBRResultado & {
   id?: string;
   codigo_cliente: string;
+};
+
+/**
+ * La última evaluación guardada en `ebr_evaluaciones`, precargada por la ficha.
+ *
+ * Es un subconjunto de `EBRResultado`, y no por olvido de la ruta: la tabla no
+ * tiene columna para `medidas` ni para `matriz_valoracion_referencial` porque
+ * las dos se derivan del régimen y de la banda. Rearmarlas aquí con el texto de
+ * hoy y colgarlas de una evaluación vieja las presentaría como las medidas que
+ * se le aplicaron, que es justo lo que la fotografía de `entrada` existe para
+ * evitar. Se muestran solo cuando la evaluación se acaba de correr.
+ *
+ * `gradoRiesgo` y `regimen` se tipan como `string` y no como las uniones del
+ * motor: en la base son texto y los protege un CHECK, no el compilador.
+ */
+export type EBRGuardado = {
+  id: string | null;
+  fechaEvaluacion: string;
+  gradoRiesgo: string;
+  regimen: string;
+  razonClasificacion: string;
+  fundamentoClasificacion: string;
+  supuestosEvaluados: SupuestoEvaluado[];
+  matrizFactores: FactorMatriz[];
+  matrizPuntajeTotal: number | null;
+  matrizBanda: string;
+  esPep: boolean;
+  pepExtranjero: boolean;
+  aplicaMedidasPep: boolean;
+  requiereAprobacionOficial: boolean;
+  enListaBloqueadas: boolean;
+  alertaCritica: string | null;
+  evaluacionPreliminar: boolean;
+  motivosPreliminar: string[];
+  verificacionesPendientes: string[];
+  observaciones: ObservacionEBR[];
+  overrideSource: string;
+  elaboro: string;
+  revisaAutoriza: string;
+};
+
+/**
+ * Lo que el panel pinta, venga de la corrida de esta sesión o de la base.
+ *
+ * `origen` no es decorativo: una evaluación de hace meses y una de hace treinta
+ * segundos se ven idénticas, y confundirlas es leer como vigente un grado que
+ * ya se recalculó. La fecha sola no basta cuando se reevalúa el mismo día.
+ */
+type Vista = EBRGuardado & {
+  origen: 'sesion' | 'guardada';
+  medidas: string | null;
+  valoracionReferencial: string | null;
 };
 
 /** Fecha ISO a texto estable: sin locale, para no romper la hidratación. */
@@ -43,7 +95,13 @@ function Bandera({ texto, encendida }: { texto: string; encendida: boolean }) {
   );
 }
 
-export default function EvaluarEBR({ codigo }: { codigo: string }) {
+export default function EvaluarEBR({
+  codigo,
+  inicial,
+}: {
+  codigo: string;
+  inicial: EBRGuardado | null;
+}) {
   const [resultado, setResultado] = useState<Respuesta | null>(null);
   const [cargando, setCargando] = useState(false);
   const [error, setError] = useState('');
@@ -90,7 +148,42 @@ export default function EvaluarEBR({ codigo }: { codigo: string }) {
     }
   }
 
-  const alto = resultado?.grado_riesgo === 'ALTO';
+  // Una evaluación recién corrida gana sobre la precargada. Que la precargada
+  // quede obsoleta no importa: nunca se vuelve a leer mientras haya resultado.
+  const vista: Vista | null = resultado
+    ? {
+        origen: 'sesion',
+        id: resultado.id ?? null,
+        fechaEvaluacion: resultado.fecha_evaluacion,
+        gradoRiesgo: resultado.grado_riesgo,
+        regimen: resultado.regimen,
+        razonClasificacion: resultado.razon_clasificacion,
+        fundamentoClasificacion: resultado.fundamento_clasificacion,
+        supuestosEvaluados: resultado.supuestos_evaluados,
+        matrizFactores: resultado.matriz_factores,
+        matrizPuntajeTotal: resultado.matriz_puntaje_total,
+        matrizBanda: resultado.matriz_banda,
+        esPep: resultado.es_pep,
+        pepExtranjero: resultado.pep_extranjero,
+        aplicaMedidasPep: resultado.aplica_medidas_pep,
+        requiereAprobacionOficial: resultado.requiere_aprobacion_oficial,
+        enListaBloqueadas: resultado.en_lista_bloqueadas,
+        alertaCritica: resultado.alerta_critica,
+        evaluacionPreliminar: resultado.evaluacion_preliminar,
+        motivosPreliminar: resultado.motivos_preliminar,
+        verificacionesPendientes: resultado.verificaciones_pendientes,
+        observaciones: resultado.observaciones,
+        overrideSource: resultado.override_source,
+        elaboro: resultado.elaboro,
+        revisaAutoriza: resultado.revisa_autoriza,
+        medidas: resultado.medidas,
+        valoracionReferencial: resultado.matriz_valoracion_referencial,
+      }
+    : inicial
+      ? { origen: 'guardada', ...inicial, medidas: null, valoracionReferencial: null }
+      : null;
+
+  const alto = vista?.gradoRiesgo === 'ALTO';
 
   return (
     <section className="mt-8">
@@ -101,7 +194,7 @@ export default function EvaluarEBR({ codigo }: { codigo: string }) {
           disabled={cargando}
           className="bg-slate-900 text-white px-4 py-2 rounded text-sm hover:bg-slate-700 disabled:opacity-50"
         >
-          {cargando ? 'Evaluando…' : resultado ? 'Reevaluar EBR' : 'Evaluar EBR'}
+          {cargando ? 'Evaluando…' : vista ? 'Reevaluar EBR' : 'Evaluar EBR'}
         </button>
       </div>
 
@@ -115,14 +208,32 @@ export default function EvaluarEBR({ codigo }: { codigo: string }) {
 
       {error && <p className="text-sm text-red-600 mb-3">{error}</p>}
 
-      {!resultado && !error && (
+      {!vista && !error && (
         <p className="text-sm text-slate-400 italic">
-          Aún no se ha evaluado el riesgo PLD/FT de este cliente en esta sesión.
+          Aún no se ha evaluado el riesgo PLD/FT de este cliente.
         </p>
       )}
 
-      {resultado && (
+      {vista && (
         <div className="space-y-4">
+          {/* Antes que nada, de qué evaluación se está hablando. Va arriba y no
+              en la trazabilidad del pie porque la pregunta «¿esto es lo que
+              acabo de correr?» se hace al mirar el grado, no al final. */}
+          <p className="flex flex-wrap items-center gap-2 text-sm text-slate-600">
+            <span
+              className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${
+                vista.origen === 'sesion'
+                  ? 'bg-green-100 text-green-700'
+                  : 'bg-slate-100 text-slate-600'
+              }`}
+            >
+              {vista.origen === 'sesion'
+                ? 'Evaluada en esta sesión'
+                : 'Última evaluación guardada'}
+            </span>
+            <span>{fechaLegible(vista.fechaEvaluacion)}</span>
+          </p>
+
           {sinGuardar && (
             <p className="border border-red-300 bg-red-50 rounded-lg px-4 py-3 text-sm text-red-900">
               <strong>La evaluación se calculó pero NO se guardó.</strong> Lo que
@@ -130,18 +241,18 @@ export default function EvaluarEBR({ codigo }: { codigo: string }) {
             </p>
           )}
 
-          {resultado.alerta_critica && (
+          {vista.alertaCritica && (
             <p className="border border-red-300 bg-red-50 rounded-lg px-4 py-3 text-sm text-red-900">
-              <strong>Alerta crítica.</strong> {resultado.alerta_critica}
+              <strong>Alerta crítica.</strong> {vista.alertaCritica}
             </p>
           )}
 
-          {resultado.evaluacion_preliminar && (
+          {vista.evaluacionPreliminar && (
             <div className="border border-amber-300 bg-amber-50 rounded-lg px-4 py-3 text-sm text-amber-900">
               <strong>Evaluación preliminar.</strong> El expediente está
               incompleto; la clasificación no es definitiva hasta resolver:
               <ul className="list-disc ml-5 mt-2 space-y-1">
-                {resultado.motivos_preliminar.map((motivo, i) => (
+                {vista.motivosPreliminar.map((motivo, i) => (
                   <li key={i}>{motivo}</li>
                 ))}
               </ul>
@@ -161,14 +272,14 @@ export default function EvaluarEBR({ codigo }: { codigo: string }) {
                 alto ? 'text-red-800' : 'text-slate-900'
               }`}
             >
-              {resultado.grado_riesgo}
+              {vista.gradoRiesgo}
             </p>
             <p className="text-sm text-slate-700 mt-1">
-              Régimen <strong>{resultado.regimen}</strong>
+              Régimen <strong>{vista.regimen}</strong>
             </p>
-            <p className="text-sm text-slate-800 mt-2">{resultado.razon_clasificacion}</p>
+            <p className="text-sm text-slate-800 mt-2">{vista.razonClasificacion}</p>
             <p className="text-xs text-slate-500 mt-2">
-              {resultado.fundamento_clasificacion}
+              {vista.fundamentoClasificacion}
             </p>
           </div>
 
@@ -177,18 +288,18 @@ export default function EvaluarEBR({ codigo }: { codigo: string }) {
           <div>
             <h3 className="text-sm font-semibold text-slate-700 mb-2">Banderas</h3>
             <div className="flex flex-wrap gap-2">
-              <Bandera texto="PEP" encendida={resultado.es_pep} />
-              <Bandera texto="PEP extranjero" encendida={resultado.pep_extranjero} />
-              <Bandera texto="Medidas PEP" encendida={resultado.aplica_medidas_pep} />
+              <Bandera texto="PEP" encendida={vista.esPep} />
+              <Bandera texto="PEP extranjero" encendida={vista.pepExtranjero} />
+              <Bandera texto="Medidas PEP" encendida={vista.aplicaMedidasPep} />
               <Bandera
                 texto="Aprobación del Oficial"
-                encendida={resultado.requiere_aprobacion_oficial}
+                encendida={vista.requiereAprobacionOficial}
               />
               <Bandera
                 texto="Lista de bloqueadas"
-                encendida={resultado.en_lista_bloqueadas}
+                encendida={vista.enListaBloqueadas}
               />
-              <Bandera texto="Preliminar" encendida={resultado.evaluacion_preliminar} />
+              <Bandera texto="Preliminar" encendida={vista.evaluacionPreliminar} />
             </div>
           </div>
 
@@ -199,7 +310,7 @@ export default function EvaluarEBR({ codigo }: { codigo: string }) {
               Supuestos evaluados
             </h3>
             <ol className="border border-slate-200 rounded-lg divide-y divide-slate-100">
-              {resultado.supuestos_evaluados.map((s: SupuestoEvaluado, i) => (
+              {vista.supuestosEvaluados.map((s, i) => (
                 <li key={i} className="px-4 py-3">
                   <div className="flex flex-wrap items-center gap-2">
                     <span
@@ -232,18 +343,22 @@ export default function EvaluarEBR({ codigo }: { codigo: string }) {
             <div className="border border-slate-200 rounded-lg px-4 py-4">
               <p className="text-sm text-slate-500">Puntaje total</p>
               <p className="text-2xl font-semibold text-slate-900 mt-1">
-                {resultado.matriz_puntaje_total}
+                {vista.matrizPuntajeTotal}
                 <span className="text-base font-normal text-slate-600">
-                  {' '}· banda {resultado.matriz_banda}
+                  {' '}· banda {vista.matrizBanda}
                 </span>
               </p>
+              {/* La valoración tampoco se guarda, pero su segunda mitad es una
+                  advertencia fija del método, no un dato de esta corrida: se
+                  imprime siempre para que la banda nunca se lea como grado. */}
               <p className="text-xs text-slate-500 mt-2">
-                {resultado.matriz_valoracion_referencial}
+                {vista.valoracionReferencial ??
+                  'Referencial: es evidencia técnica del análisis y no determina el grado de riesgo.'}
               </p>
 
               <details className="mt-3">
                 <summary className="text-sm text-slate-600 cursor-pointer">
-                  Ver los {resultado.matriz_factores.length} factores
+                  Ver los {vista.matrizFactores.length} factores
                 </summary>
                 <div className="overflow-x-auto mt-2">
                   <table className="w-full text-sm">
@@ -257,7 +372,7 @@ export default function EvaluarEBR({ codigo }: { codigo: string }) {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {resultado.matriz_factores.map((f: FactorMatriz, i) => (
+                      {vista.matrizFactores.map((f, i) => (
                         <tr key={i}>
                           <td className="py-2 pr-3 text-slate-500">{f.factor}</td>
                           <td className="py-2 pr-3 text-slate-900">
@@ -283,22 +398,31 @@ export default function EvaluarEBR({ codigo }: { codigo: string }) {
 
           <div>
             <h3 className="text-sm font-semibold text-slate-700 mb-2">
-              Medidas del régimen {resultado.regimen}
+              Medidas del régimen {vista.regimen}
             </h3>
-            <p className="border border-slate-200 rounded-lg px-4 py-3 text-sm text-slate-800">
-              {resultado.medidas}
-            </p>
+            {vista.medidas ? (
+              <p className="border border-slate-200 rounded-lg px-4 py-3 text-sm text-slate-800">
+                {vista.medidas}
+              </p>
+            ) : (
+              <p className="text-sm text-slate-400 italic">
+                El texto de las medidas no se guarda con la evaluación: se deriva
+                del régimen y cambia si cambia el Manual. Reevalúa para verlo con
+                la redacción vigente, en lugar de leer la de hoy como si fuera la
+                que se aplicó entonces.
+              </p>
+            )}
           </div>
 
           {/* --- Verificaciones ---------------------------------------------- */}
 
-          {resultado.verificaciones_pendientes.length > 0 && (
+          {vista.verificacionesPendientes.length > 0 && (
             <div>
               <h3 className="text-sm font-semibold text-slate-700 mb-2">
                 Verificaciones pendientes
               </h3>
               <ul className="border border-slate-200 rounded-lg divide-y divide-slate-100">
-                {resultado.verificaciones_pendientes.map((v, i) => (
+                {vista.verificacionesPendientes.map((v, i) => (
                   <li key={i} className="px-4 py-2 text-sm text-slate-800">
                     {v}
                   </li>
@@ -309,13 +433,13 @@ export default function EvaluarEBR({ codigo }: { codigo: string }) {
 
           {/* --- Observaciones ------------------------------------------------ */}
 
-          {resultado.observaciones.length > 0 && (
+          {vista.observaciones.length > 0 && (
             <div>
               <h3 className="text-sm font-semibold text-slate-700 mb-2">
                 Observaciones del motor
               </h3>
               <ul className="border border-slate-200 rounded-lg divide-y divide-slate-100">
-                {resultado.observaciones.map((o, i) => (
+                {vista.observaciones.map((o, i) => (
                   <li key={i} className="px-4 py-2">
                     <p className="text-xs uppercase tracking-wide text-slate-400">
                       {o.factor}
@@ -331,14 +455,13 @@ export default function EvaluarEBR({ codigo }: { codigo: string }) {
 
           <div className="text-xs text-slate-400 space-y-0.5">
             <p>
-              Evaluado el {fechaLegible(resultado.fecha_evaluacion)} · fuente{' '}
-              {resultado.override_source}
+              Evaluado el {fechaLegible(vista.fechaEvaluacion)} · fuente{' '}
+              {vista.overrideSource}
             </p>
             <p>
-              Elaboró {resultado.elaboro} · revisa y autoriza{' '}
-              {resultado.revisa_autoriza}
+              Elaboró {vista.elaboro} · revisa y autoriza {vista.revisaAutoriza}
             </p>
-            {resultado.id && <p>Registro {resultado.id}</p>}
+            {vista.id && <p>Registro {vista.id}</p>}
           </div>
         </div>
       )}
