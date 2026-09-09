@@ -32,7 +32,9 @@ export type AccionBitacora =
   | 'calculo_ips'
   | 'generacion_portafolio'
   | 'ajuste_perfil_asesor'
-  | 'evaluacion_ebr';
+  | 'evaluacion_ebr'
+  | 'carga_lista_control'
+  | 'resolucion_coincidencia_lista';
 
 export interface EventoBitacora {
   /** Tabla afectada. Debe coincidir con la que usan los triggers. */
