@@ -37,6 +37,8 @@ function base(sobre: Partial<EBRInputs> = {}): EBRInputs {
     ocupacion_pb: 'JUBILADO',
     realiza_actividad_vulnerable: false,
     actividades_vulnerables: [],
+    // El valor y su procedencia van apareados, igual que en la base.
+    actividad_vulnerable_fuente: 'cliente',
     es_pep_nacional_declarado: false,
     es_pep_extranjero_declarado: false,
     familiar_pep_nacional: false,
@@ -571,4 +573,144 @@ test('listas · retirar la LPB no pone en verde un expediente con huecos', () =>
     r.motivos_preliminar.some((m) => /Personas Bloqueadas/.test(m)),
     false
   );
+});
+
+// ---------------------------------------------------------------------------
+// Art. 17 · procedencia de la respuesta (cliente / asesor / sin registrar)
+// ---------------------------------------------------------------------------
+//
+// La cartera entera tenía `realiza_actividad_vulnerable` en null y eso mantenía
+// a los 28 expedientes en preliminar. La salida NO fue fingir una declaración
+// que el Cliente nunca dio: fue registrar la determinación del Asesor COMO
+// determinación del Asesor. Lo que estos casos fijan es que las dos cosas no se
+// puedan volver a confundir en el texto del expediente.
+
+const MOTIVO_ART17 = 'No consta la declaración de actividad vulnerable (Art. 17).';
+
+test('Art. 17 · la determinación del Asesor cierra el motivo preliminar', () => {
+  const conHueco = evaluarEBR(
+    base({ realiza_actividad_vulnerable: null, actividad_vulnerable_fuente: null }),
+    AHORA
+  );
+  assert.ok(conHueco.motivos_preliminar.includes(MOTIVO_ART17));
+
+  const determinado = evaluarEBR(
+    base({
+      realiza_actividad_vulnerable: false,
+      actividad_vulnerable_fuente: 'asesor',
+      actividad_vulnerable_fecha: '2026-09-10',
+    }),
+    AHORA
+  );
+
+  assert.equal(determinado.motivos_preliminar.includes(MOTIVO_ART17), false);
+  // Cerrado el motivo, pero NO en silencio: consta que falta la ratificación.
+  const obs = determinado.observaciones.find((o) => o.factor === 'SUPUESTO 1');
+  assert.ok(obs, 'la determinación del Asesor tiene que dejar constancia');
+  assert.match(obs.nota, /pendiente de ratificación/i);
+  assert.match(obs.nota, /2026-09-10/);
+});
+
+test('Art. 17 · el texto distingue determinación del Asesor de declaración del Cliente', () => {
+  const porAsesor = evaluarEBR(
+    base({
+      realiza_actividad_vulnerable: false,
+      actividad_vulnerable_fuente: 'asesor',
+      actividad_vulnerable_fecha: '2026-09-10',
+    }),
+    AHORA
+  );
+  const porCliente = evaluarEBR(
+    base({ realiza_actividad_vulnerable: false, actividad_vulnerable_fuente: 'cliente' }),
+    AHORA
+  );
+
+  // LO CENTRAL: el expediente NUNCA puede decir que el Cliente declaró algo que
+  // el Cliente no declaró. Una determinación presentada como declaración es una
+  // declaración inventada.
+  assert.match(porAsesor.supuestos_evaluados[0].detalle, /Determinación del Asesor en Inversiones/);
+  assert.equal(/declara/i.test(porAsesor.supuestos_evaluados[0].detalle), false);
+
+  // Y al revés: con procedencia 'cliente' el texto queda exactamente como estaba.
+  assert.equal(
+    porCliente.supuestos_evaluados[0].detalle,
+    'El cliente declara no realizar actividades vulnerables.'
+  );
+
+  // El SÍ determinado por el Asesor tampoco se disfraza de declaración.
+  const siPorAsesor = evaluarEBR(
+    base({
+      realiza_actividad_vulnerable: true,
+      actividades_vulnerables: ['Mutuo, préstamo o crédito'],
+      actividad_vulnerable_fuente: 'asesor',
+    }),
+    AHORA
+  );
+  assert.match(siPorAsesor.supuestos_evaluados[0].detalle, /Determinación del Asesor/);
+  assert.equal(siPorAsesor.supuestos_evaluados[0].activo, true);
+});
+
+test('Art. 17 · null sigue siendo hueco, con procedencia o sin ella', () => {
+  for (const fuente of [null, 'cliente', 'asesor'] as const) {
+    const r = evaluarEBR(
+      base({ realiza_actividad_vulnerable: null, actividad_vulnerable_fuente: fuente }),
+      AHORA
+    );
+    assert.ok(r.motivos_preliminar.includes(MOTIVO_ART17), `fuente ${fuente}`);
+    assert.equal(r.supuestos_evaluados[0].activo, false);
+    assert.match(r.supuestos_evaluados[0].detalle, /no evaluable/i);
+  }
+});
+
+test('Art. 17 · un valor sin procedencia no se atribuye a nadie', () => {
+  // La base lo impide con un CHECK sobre las dos columnas. Si llega igual, el
+  // motor no elige un texto: ni «declara» ni «determinó».
+  const negativo = evaluarEBR(
+    base({ realiza_actividad_vulnerable: false, actividad_vulnerable_fuente: null }),
+    AHORA
+  );
+  assert.equal(/declara|Determinación/i.test(negativo.supuestos_evaluados[0].detalle), false);
+  assert.ok(negativo.motivos_preliminar.some((m) => /sin procedencia|no tiene procedencia/i.test(m)));
+  assert.equal(negativo.supuestos_evaluados[0].activo, false);
+
+  // Un SÍ sin procedencia SÍ activa el supuesto: en PLD un dato que agrava no
+  // se descarta por venir mal documentado.
+  const afirmativo = evaluarEBR(
+    base({
+      realiza_actividad_vulnerable: true,
+      actividades_vulnerables: ['Mutuo, préstamo o crédito'],
+      actividad_vulnerable_fuente: null,
+    }),
+    AHORA
+  );
+  assert.equal(afirmativo.supuestos_evaluados[0].activo, true);
+});
+
+test('Art. 17 · cerrar el motivo no mueve el grado ni el puntaje', () => {
+  // El compromiso de la corrida masiva: esto cierra un motivo de preliminaridad
+  // y NO toca la matriz ni la regla del §4.6. Si esta prueba falla, la próxima
+  // masiva reclasificaría expedientes por un cambio que no era de metodología.
+  const antes = evaluarEBR(
+    base({ realiza_actividad_vulnerable: null, actividad_vulnerable_fuente: null }),
+    AHORA
+  );
+  const despues = evaluarEBR(
+    base({
+      realiza_actividad_vulnerable: false,
+      actividad_vulnerable_fuente: 'asesor',
+      actividad_vulnerable_fecha: '2026-09-10',
+    }),
+    AHORA
+  );
+
+  assert.equal(despues.grado_riesgo, antes.grado_riesgo);
+  assert.equal(despues.regimen, antes.regimen);
+  assert.equal(despues.matriz_puntaje_total, antes.matriz_puntaje_total);
+  assert.equal(despues.matriz_banda, antes.matriz_banda);
+  assert.deepEqual(
+    despues.matriz_factores.map((f) => f.puntaje),
+    antes.matriz_factores.map((f) => f.puntaje)
+  );
+  // Lo único que cambia es que sobra un motivo.
+  assert.equal(despues.motivos_preliminar.length, antes.motivos_preliminar.length - 1);
 });

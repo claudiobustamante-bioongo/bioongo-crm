@@ -71,7 +71,10 @@ export async function evaluarYGuardarEBR(
     const { data: cliente, error: errorCliente } = await supabase
       .from('clientes')
       .select(
-        'nombre, apellido_paterno, apellido_materno, rfc, curp, fecha_nacimiento, genero, ocupacion, ocupacion_pb, realiza_actividad_vulnerable, actividades_vulnerables, actividad_vulnerable_detalle, documentos_completos',
+        // `actividad_vulnerable_fuente` y `_fecha` viajan con el valor: sin ellas
+        // el motor no puede decir si la respuesta la dio el Cliente o la
+        // determinó el Asesor, y trataría toda la cartera como hueco.
+        'nombre, apellido_paterno, apellido_materno, rfc, curp, fecha_nacimiento, genero, ocupacion, ocupacion_pb, realiza_actividad_vulnerable, actividades_vulnerables, actividad_vulnerable_detalle, actividad_vulnerable_fuente, actividad_vulnerable_fecha, documentos_completos',
       )
       .eq('codigo_cliente', codigo_cliente)
       .maybeSingle();

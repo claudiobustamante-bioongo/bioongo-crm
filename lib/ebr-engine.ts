@@ -63,6 +63,31 @@ export type GradoRiesgo = 'BAJO' | 'ALTO';
 export type Regimen = 'Ordinario' | 'Reforzado';
 export type FuenteOverride = 'automatic' | 'listas_csv_manual' | 'nubarium';
 
+/**
+ * Quién contestó la pregunta del Art. 17. Espeja el CHECK de
+ * `clientes.actividad_vulnerable_fuente`.
+ *
+ * TRES ESTADOS, NO DOS. La columna `realiza_actividad_vulnerable` ya distinguía
+ * `null` («no se preguntó») de `false` («contestó que no»). Esto agrega la
+ * tercera posibilidad, que es la real en la cartera: nadie le preguntó al
+ * Cliente, pero el Asesor determinó la respuesta a partir de la ocupación
+ * declarada y firma esa determinación.
+ *
+ * NO son intercambiables y el expediente no puede confundirlas: una
+ * determinación del Asesor presentada como declaración del Cliente es una
+ * declaración inventada. Por eso el texto de `detalle` se arma distinto según
+ * esta bandera, y por eso la determinación del Asesor deja constancia de que
+ * está pendiente de ratificación.
+ *
+ * PENDIENTE ANOTADO · `clientes.ocupacion_pb_fuente` tiene el mismo defecto que
+ * tenía esta columna: guarda un párrafo («Declarada por el Asesor a partir de
+ * KYC…») donde debería guardar quién lo dijo. Debe partirse igual —procedencia
+ * en `_fuente`, prosa en un `_detalle`— cuando se toque esa pieza. No se tocó
+ * aquí a propósito: son dos migraciones distintas y mezclarlas haría que un
+ * error en una revirtiera la otra.
+ */
+export type FuenteActividadVulnerable = 'cliente' | 'asesor';
+
 /** Una lista vigente contra la que se corrió el cotejo. */
 export interface ListaCotejadaEBR {
   /** Espeja `TipoLista` de `lib/listas.ts`: LPB, PEP_NACIONAL, OFAC, SAT_69B, ONU. */
@@ -192,6 +217,15 @@ export interface EBRInputs {
   realiza_actividad_vulnerable: boolean | null;
   actividades_vulnerables: string[];
   actividad_vulnerable_detalle?: string | null;
+  /**
+   * Procedencia de la respuesta anterior. Va apareada con ella: las dos nulas
+   * («no consta») o las dos llenas («consta, y consta quién lo dijo»). La base
+   * sostiene ese invariante con un CHECK sobre ambas columnas; aquí se vuelve a
+   * verificar porque el motor también corre con entradas que no vienen de ahí.
+   */
+  actividad_vulnerable_fuente?: FuenteActividadVulnerable | null;
+  /** Fecha de la declaración o de la determinación. El motor NO evalúa su antigüedad. */
+  actividad_vulnerable_fecha?: string | null;
 
   // PEP · declarado por el cliente
   es_pep_nacional_declarado: boolean | null;
@@ -797,6 +831,8 @@ function evaluarSupuesto1(inputs: EBRInputs, ctx: Contexto): SupuestoEvaluado {
     fundamento: FUNDAMENTOS.supuesto1,
   };
 
+  const fuente = inputs.actividad_vulnerable_fuente ?? null;
+
   // null NO es false: la pregunta no se formuló. El supuesto no se puede
   // evaluar, la evaluación es preliminar, y el grado no se eleva por ello.
   if (inputs.realiza_actividad_vulnerable === null) {
@@ -810,8 +846,64 @@ function evaluarSupuesto1(inputs: EBRInputs, ctx: Contexto): SupuestoEvaluado {
     return { ...base, detalle: 'Pregunta no formulada. Supuesto no evaluable.', activo: false };
   }
 
+  // Hay respuesta pero no consta quién la dio. La base lo impide con un CHECK
+  // sobre las dos columnas; si llega igual, el motor NO elige un texto: escribir
+  // «el Cliente declara» sin saberlo es inventar una declaración, y escribir
+  // «el Asesor determinó» sin saberlo es atribuirle una firma que no dio.
+  //
+  // Un SÍ sin procedencia sí activa el supuesto: en PLD, un dato que agrava no
+  // se descarta por venir mal documentado. Un NO sin procedencia no cierra
+  // nada, porque una negativa sin origen no es una negativa.
+  if (fuente === null) {
+    const afirmativo = inputs.realiza_actividad_vulnerable === true;
+    anotar(
+      ctx,
+      'SUPUESTO 1',
+      'Consta una respuesta sobre actividades vulnerables del Art. 17 SIN procedencia: no ' +
+        'se registró si la declaró el Cliente o la determinó el Asesor. El expediente no ' +
+        'puede atribuirla a ninguno de los dos.',
+    );
+    marcarPreliminar(
+      ctx,
+      'La respuesta sobre actividad vulnerable (Art. 17) no tiene procedencia registrada.',
+    );
+    return {
+      ...base,
+      detalle: afirmativo
+        ? `Consta que realiza: ${inputs.actividades_vulnerables.join(', ')}. Sin procedencia registrada.`
+        : 'Consta una respuesta negativa sin procedencia registrada. Supuesto no evaluable.',
+      activo: afirmativo,
+    };
+  }
+
+  const porAsesor = fuente === 'asesor';
+  const fecha = inputs.actividad_vulnerable_fecha
+    ? ` del ${inputs.actividad_vulnerable_fecha.slice(0, 10)}`
+    : '';
+
+  // La determinación del Asesor CIERRA el motivo preliminar —la pregunta ya
+  // tiene respuesta con procedencia, que era lo que faltaba— pero deja dicho en
+  // el expediente que todavía no la ratifica quien tiene que ratificarla. Es una
+  // observación y no un motivo: constar no es lo mismo que bloquear.
+  if (porAsesor) {
+    anotar(
+      ctx,
+      'SUPUESTO 1',
+      `Determinación del Asesor en Inversiones${fecha}, no declaración del Cliente. Se sostiene ` +
+        'en la ocupación declarada y queda pendiente de ratificación conforme al detalle ' +
+        'asentado en el expediente.',
+    );
+  }
+
   if (inputs.realiza_actividad_vulnerable === false) {
-    return { ...base, detalle: 'El cliente declara no realizar actividades vulnerables.', activo: false };
+    return {
+      ...base,
+      detalle: porAsesor
+        ? `Determinación del Asesor en Inversiones${fecha}: no consta que el Cliente realice ` +
+          'actividades vulnerables del Art. 17.'
+        : 'El cliente declara no realizar actividades vulnerables.',
+      activo: false,
+    };
   }
 
   const desconocidas = inputs.actividades_vulnerables.filter(
@@ -821,14 +913,17 @@ function evaluarSupuesto1(inputs: EBRInputs, ctx: Contexto): SupuestoEvaluado {
     anotar(
       ctx,
       'SUPUESTO 1',
-      `Actividades declaradas que no figuran entre las 16 del Art. 17: ${desconocidas.join(', ')}. ` +
-        'Se contabilizan igual, pero conviene cotejar la captura.',
+      `Actividades ${porAsesor ? 'determinadas' : 'declaradas'} que no figuran entre las 16 del ` +
+        `Art. 17: ${desconocidas.join(', ')}. Se contabilizan igual, pero conviene cotejar la captura.`,
     );
   }
 
   return {
     ...base,
-    detalle: `El cliente declara realizar: ${inputs.actividades_vulnerables.join(', ')}.`,
+    detalle: porAsesor
+      ? `Determinación del Asesor en Inversiones${fecha}: el Cliente realiza ` +
+        `${inputs.actividades_vulnerables.join(', ')}.`
+      : `El cliente declara realizar: ${inputs.actividades_vulnerables.join(', ')}.`,
     activo: true,
   };
 }
@@ -1260,6 +1355,19 @@ function boolONull(valor: unknown): boolean | null {
   return typeof valor === 'boolean' ? valor : null;
 }
 
+/**
+ * Procedencia de la respuesta del Art. 17, acotada al par válido.
+ *
+ * Cualquier otro valor cae a `null`, que el motor lee como «sin procedencia» y
+ * trata como hueco. Es lo correcto: una procedencia que no se reconoce no es
+ * una procedencia, y colarla como si fuera 'cliente' sería inventar la
+ * declaración. La columna trajo texto libre hasta el 10-sep-2026, así que este
+ * filtro también es la red que evita que un renglón heredado se lea como firma.
+ */
+function fuenteActividad(valor: unknown): FuenteActividadVulnerable | null {
+  return valor === 'cliente' || valor === 'asesor' ? valor : null;
+}
+
 function numeroONull(valor: unknown): number | null {
   if (valor === null || valor === undefined) return null;
   const n = typeof valor === 'number' ? valor : Number(valor);
@@ -1362,6 +1470,8 @@ export function construirInputsEBR(filas: FilasEBR): EBRInputs {
     realiza_actividad_vulnerable: boolONull(cliente.realiza_actividad_vulnerable),
     actividades_vulnerables: actividades,
     actividad_vulnerable_detalle: textoONull(cliente.actividad_vulnerable_detalle),
+    actividad_vulnerable_fuente: fuenteActividad(cliente.actividad_vulnerable_fuente),
+    actividad_vulnerable_fecha: textoONull(cliente.actividad_vulnerable_fecha),
 
     es_pep_nacional_declarado: boolONull(pep?.es_pep_nacional),
     es_pep_extranjero_declarado: boolONull(pep?.es_pep_extranjero),
