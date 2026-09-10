@@ -7,11 +7,15 @@
  *
  * DOS COSAS QUE ESTE BLOQUE NO PUEDE DEJAR DE DECIR:
  *
- * 1. Que el cotejo contra OFAC, SAT 69-B y ONU es DILIGENCIA ADICIONAL. Un
- *    resumen en verde diciendo «sin coincidencias» es exactamente la clase de
- *    pantalla que se confunde con cumplimiento cumplido. El apartado III.10
- *    solo se satisface con la Lista de Personas Bloqueadas y la de PEP
- *    nacionales, y eso lo dice el bloque rojo de arriba, que no se toca.
+ * 1. Que el cotejo contra las listas NO obligatorias es DILIGENCIA ADICIONAL.
+ *    Un resumen en verde diciendo «sin coincidencias» es exactamente la clase
+ *    de pantalla que se confunde con cumplimiento cumplido. La obligación se
+ *    satisface con la lista de PEP nacionales, y eso lo dice el bloque de
+ *    arriba, que no se toca.
+ *
+ *    La Lista de Personas Bloqueadas dejó de ser obligatoria el 9 de septiembre
+ *    de 2026 y cae de este lado: sigue siendo cargable y cotejable, pero cuenta
+ *    como diligencia adicional. El fundamento está en `lib/listas.ts`.
  *
  * 2. CUÁNDO se corrió. «Sin coincidencias» sin fecha no informa nada: la lista
  *    pudo cargarse hace seis meses y la cartera haber cambiado entera desde
@@ -209,11 +213,12 @@ export default function ResumenCotejo({
 
       {adicionales.length > 0 && (
         <p className="mt-2 border border-amber-300 bg-amber-50 rounded-lg px-4 py-3 text-sm text-amber-900">
-          <strong>Esto es diligencia adicional, no el cumplimiento del apartado III.10.</strong>{' '}
+          <strong>Esto es debida diligencia reforzada, no el cumplimiento de la obligación.</strong>{' '}
           {enumerar(adicionales.map((l) => NOMBRE_LISTA[l.tipo] ?? l.tipo))}{' '}
-          {adicionales.length === 1 ? 'no sustituye' : 'no sustituyen'} a la Lista de Personas
-          Bloqueadas ni a la de PEP nacionales. El estado de esa obligación es el del bloque de
-          arriba, y no cambia por lo que diga este resumen.
+          {adicionales.length === 1 ? 'no sustituye' : 'no sustituyen'} a la lista de PEP
+          nacionales. Cuenta como insumo de la metodología de evaluación de riesgos del Capítulo
+          II Bis de las Disposiciones, y así se asienta en cada evaluación EBR. El estado de la
+          obligación es el del bloque de arriba, y no cambia por lo que diga este resumen.
         </p>
       )}
     </section>

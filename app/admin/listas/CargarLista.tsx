@@ -11,7 +11,10 @@ import type { TipoLista } from '@/lib/listas';
 
 /** Solo las etiquetas. La obligatoriedad la deriva el servidor con `esObligatoria()`. */
 const ETIQUETAS: Record<TipoLista, string> = {
-  LPB: 'LPB — Lista de Personas Bloqueadas (SHCP vía CNBV)',
+  // Sigue en el catálogo y sigue cotejándose. Dejó de ser obligatoria para el
+  // Asesor en Inversiones el 9-sep-2026; se conserva porque el régimen de
+  // SOFOM E.N.R. sí la contempla. Fundamento en `lib/listas.ts`.
+  LPB: 'LPB — Lista de Personas Bloqueadas (SHCP vía CNBV) · régimen SOFOM E.N.R.',
   PEP_NACIONAL: 'PEP nacionales',
   OFAC: 'OFAC — Office of Foreign Assets Control',
   SAT_69B: 'SAT 69-B — presuntas operaciones inexistentes',

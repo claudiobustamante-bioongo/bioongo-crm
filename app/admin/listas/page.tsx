@@ -86,8 +86,8 @@ export default async function AdminListas() {
 
   const filas = (listas ?? []) as FilaLista[];
 
-  // Una lista por tipo obligatorio, y tiene que estar vigente. Una LPB cargada
-  // el año pasado y ya retirada no cubre nada.
+  // Una lista por tipo obligatorio, y tiene que estar vigente. Una lista de PEP
+  // cargada el año pasado y ya retirada no cubre nada.
   const vigentePorTipo = new Map<string, FilaLista>();
   for (const l of filas) {
     if (l.vigente && !vigentePorTipo.has(l.tipo)) vigentePorTipo.set(l.tipo, l);
@@ -200,8 +200,9 @@ export default async function AdminListas() {
                   </p>
                 ) : (
                   <p className="text-sm text-red-900 mt-1.5">
-                    La obligación no está cubierta. Ninguna otra lista la sustituye: OFAC,
-                    SAT 69-B y ONU son diligencia adicional.
+                    La obligación no está cubierta. Ninguna otra lista la sustituye: la Lista
+                    de Personas Bloqueadas, OFAC, SAT 69-B y ONU son debida diligencia
+                    reforzada.
                   </p>
                 )}
               </div>

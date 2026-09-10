@@ -12,6 +12,7 @@ import assert from 'node:assert/strict';
 import {
   ErrorEBR,
   VERIFICACIONES,
+  VERIF_SANCIONES,
   evaluarEBR,
   type CotejoListas,
   type EBRInputs,
@@ -365,13 +366,25 @@ test('El país ausente no se confunde con el motivo que emite el Supuesto 2', ()
 // ---------------------------------------------------------------------------
 //
 // El motor no consulta la base: recibe el estado del cotejo ya armado. Lo que
-// se prueba aquí es que el esfuerzo real conste SIN dar por cumplida la
-// obligación del apartado III.10, que solo cierra la Lista de Personas
-// Bloqueadas de la SHCP.
+// se prueba aquí es que el esfuerzo real conste, que la búsqueda de sanciones
+// solo la cierre una lista de sanciones, y que la Lista de Personas Bloqueadas
+// haya dejado de bloquear la evaluación sin haber dejado de ser cotejable.
 
-/** La verificación 0 es la de la LPB; la 1, la de ONU/OFAC. */
-const VERIF_LPB = VERIFICACIONES[0];
-const VERIF_ONU_OFAC = VERIFICACIONES[1];
+/** La única verificación de listas que queda. Se toma por nombre, no por índice. */
+const VERIF_ONU_OFAC = VERIF_SANCIONES;
+
+test('listas · la LPB ya no figura entre las verificaciones exigibles', () => {
+  // Regresión del 9 de septiembre de 2026: las Disposiciones del art. 226 Bis
+  // LMV no contemplan el capítulo de Lista de Personas Bloqueadas para los
+  // asesores en inversiones. Mientras figuró aquí, TODA evaluación salía
+  // preliminar por una verificación que no se podía completar nunca.
+  assert.equal(
+    VERIFICACIONES.some((v) => /Personas Bloqueadas/.test(v)),
+    false
+  );
+  assert.equal(VERIFICACIONES.length, 6);
+  assert.ok(VERIFICACIONES.includes(VERIF_SANCIONES));
+});
 
 function cotejo(sobre: Partial<CotejoListas> = {}): CotejoListas {
   return {
@@ -390,54 +403,52 @@ function sinOverride(sobre: Partial<EBRInputs> = {}): EBRInputs {
   return base({ override_lista_bloqueadas: undefined, ...sobre });
 }
 
-test('listas · sin ninguna lista cargada, el motivo queda exactamente como estaba', () => {
-  // Requisito explícito: si no hay nada cargado, no se inventa un texto nuevo.
+test('listas · sin ninguna lista cargada, no consta la búsqueda en sanciones', () => {
+  const MOTIVO =
+    'No consta la búsqueda en las listas del Consejo de Seguridad de la ONU ni en las de ' +
+    'sanciones internacionales (OFAC).';
+
   const sinNada = evaluarEBR(sinOverride(), AHORA);
-  assert.ok(
-    sinNada.motivos_preliminar.includes(
-      'No consta la búsqueda en listas de personas bloqueadas (SHCP/ONU/OFAC).'
-    )
-  );
+  assert.ok(sinNada.motivos_preliminar.includes(MOTIVO));
   assert.equal(sinNada.override_source, 'automatic');
 
   // Un cotejo con cero listas vigentes es la misma situación, no una distinta.
   const vacio = evaluarEBR(sinOverride({ cotejo_listas: cotejo({ listas: [] }) }), AHORA);
-  assert.ok(
-    vacio.motivos_preliminar.includes(
-      'No consta la búsqueda en listas de personas bloqueadas (SHCP/ONU/OFAC).'
-    )
-  );
+  assert.ok(vacio.motivos_preliminar.includes(MOTIVO));
 
-  // Y las dos búsquedas siguen pendientes en ambos casos.
   for (const r of [sinNada, vacio]) {
-    assert.ok(r.verificaciones_pendientes.includes(VERIF_LPB));
     assert.ok(r.verificaciones_pendientes.includes(VERIF_ONU_OFAC));
+    // Ya no se reclama una búsqueda en la LPB que nadie tiene que hacer.
+    assert.equal(
+      r.motivos_preliminar.some((m) => /Personas Bloqueadas/.test(m)),
+      false
+    );
   }
 });
 
-test('listas · OFAC y SAT 69-B limpios: consta el cotejo, la LPB sigue pendiente', () => {
+test('listas · OFAC y SAT 69-B limpios: cierran la búsqueda y constan como debida diligencia', () => {
   const r = evaluarEBR(sinOverride({ cotejo_listas: cotejo() }), AHORA);
 
-  // Ya no dice que no consta la búsqueda: se hizo, y se dice contra qué.
+  // LO CENTRAL DEL CAMBIO: el cotejo limpio contra OFAC ya no deja NINGÚN
+  // motivo preliminar. Mientras la LPB fue obligación, aquí quedaba uno que
+  // decía «NO sustituye la búsqueda en la Lista de Personas Bloqueadas», y era
+  // un motivo que ningún expediente podía cerrar.
   assert.equal(
-    r.motivos_preliminar.includes(
-      'No consta la búsqueda en listas de personas bloqueadas (SHCP/ONU/OFAC).'
-    ),
+    r.motivos_preliminar.some((m) => /Cotejo ejecutado|Personas Bloqueadas/.test(m)),
     false
   );
 
-  const motivo = r.motivos_preliminar.find((m) => /Cotejo ejecutado/.test(m));
-  assert.ok(motivo, 'debe constar el cotejo ejecutado');
-  assert.match(motivo, /OFAC \(corte 2026-08-31\)/);
-  assert.match(motivo, /SAT 69-B \(corte 2026-07-31\)/);
-  assert.match(motivo, /2026-09-09/);
-  assert.match(motivo, /NO sustituye/);
-  assert.match(motivo, /Lista de Personas Bloqueadas/);
+  // Pero el esfuerzo consta: baja a observaciones con su fundamento.
+  const obs = r.observaciones.find((o) => o.factor === 'LISTAS DE CONTROL');
+  assert.ok(obs, 'el cotejo ejecutado tiene que constar en el expediente');
+  assert.match(obs.nota, /OFAC \(corte 2026-08-31\)/);
+  assert.match(obs.nota, /SAT 69-B \(corte 2026-07-31\)/);
+  assert.match(obs.nota, /2026-09-09/);
+  assert.match(obs.nota, /debida diligencia reforzada/);
+  assert.match(obs.nota, /Capítulo II Bis/);
+  assert.match(obs.nota, /226 Bis/);
 
-  // LO CENTRAL: OFAC cierra su verificación, la de la LPB NO. Con un solo
-  // booleano para las dos, esta aserción fallaría y la obligación del III.10
-  // se daría por cumplida sin haberse ejecutado.
-  assert.ok(r.verificaciones_pendientes.includes(VERIF_LPB));
+  // OFAC cierra la búsqueda de sanciones. El 69-B no la habría cerrado solo.
   assert.equal(r.verificaciones_pendientes.includes(VERIF_ONU_OFAC), false);
 
   assert.equal(r.en_lista_bloqueadas, false);
@@ -446,7 +457,7 @@ test('listas · OFAC y SAT 69-B limpios: consta el cotejo, la LPB sigue pendient
   assert.equal(r.override_source, 'listas_csv_manual');
 });
 
-test('listas · el SAT 69-B solo no cierra ninguna búsqueda: es materia fiscal', () => {
+test('listas · el SAT 69-B solo no cierra la búsqueda de sanciones: es materia fiscal', () => {
   const r = evaluarEBR(
     sinOverride({
       cotejo_listas: cotejo({
@@ -456,16 +467,20 @@ test('listas · el SAT 69-B solo no cierra ninguna búsqueda: es materia fiscal'
     AHORA
   );
 
+  // Aquí SÍ queda motivo preliminar, y es uno que se puede cerrar cargando
+  // OFAC: es la diferencia con el que se retiró.
   const motivo = r.motivos_preliminar.find((m) => /Cotejo ejecutado/.test(m));
   assert.ok(motivo);
-  assert.match(motivo, /Ninguna de ellas es lista de sanciones/);
+  assert.match(motivo, /ninguna de esas listas es de sanciones/);
+  assert.match(motivo, /debida diligencia reforzada/);
+  assert.match(motivo, /Capítulo II Bis/);
 
-  // Ninguna de las dos se cierra: el 69-B no es lista de sanciones.
-  assert.ok(r.verificaciones_pendientes.includes(VERIF_LPB));
   assert.ok(r.verificaciones_pendientes.includes(VERIF_ONU_OFAC));
 });
 
-test('listas · la LPB limpia sí cierra su verificación y no deja motivo', () => {
+test('listas · la LPB sigue siendo cotejable, pero ya no cierra ninguna verificación', () => {
+  // La capacidad técnica se conserva a propósito: el régimen de SOFOM E.N.R. sí
+  // contempla la Lista de Personas Bloqueadas y este módulo se reusa ahí.
   const r = evaluarEBR(
     sinOverride({
       cotejo_listas: cotejo({
@@ -475,15 +490,14 @@ test('listas · la LPB limpia sí cierra su verificación y no deja motivo', () 
     AHORA
   );
 
-  assert.equal(r.verificaciones_pendientes.includes(VERIF_LPB), false);
-  // La de ONU/OFAC sigue abierta: la LPB no la cubre, igual que al revés.
-  assert.ok(r.verificaciones_pendientes.includes(VERIF_ONU_OFAC));
+  // Cuenta como cotejo de sanciones —es una lista de bloqueo— y por eso consta
+  // como debida diligencia y no como «no consta la búsqueda».
+  const obs = r.observaciones.find((o) => o.factor === 'LISTAS DE CONTROL');
+  assert.ok(obs);
+  assert.match(obs.nota, /Lista de Personas Bloqueadas \(corte 2026-09-01\)/);
 
-  // Cotejo limpio contra la lista obligatoria: no hay nada que advertir.
-  assert.equal(
-    r.motivos_preliminar.some((m) => /Cotejo ejecutado/.test(m)),
-    false
-  );
+  // Pero NO cubre la de ONU/OFAC, que es la que quedó viva.
+  assert.ok(r.verificaciones_pendientes.includes(VERIF_ONU_OFAC));
   assert.equal(r.en_lista_bloqueadas, false);
 });
 
@@ -501,7 +515,10 @@ test('listas · coincidencia CONFIRMADA: ALTO automático y alerta del 10.10', (
   assert.equal(r.en_lista_bloqueadas, true);
   assert.equal(r.grado_riesgo, 'ALTO');
   assert.equal(r.regimen, 'Reforzado');
-  assert.match(r.razon_clasificacion, /Lista de Personas Bloqueadas/);
+  // La razón no afirma DE CUÁL lista salió el match: el motor recibe conteos,
+  // no tipos. Decir «Lista de Personas Bloqueadas» sobre una coincidencia de
+  // OFAC sería asentar en el expediente algo que no consta.
+  assert.match(r.razon_clasificacion, /coincidencia confirmada/i);
   assert.ok(r.alerta_critica);
   assert.match(r.alerta_critica, /24 horas/);
 });
@@ -525,7 +542,33 @@ test('listas · coincidencia PENDIENTE: preliminar, pero sin suspender a nadie',
   assert.match(motivo, /homónimo/);
 
   assert.equal(r.evaluacion_preliminar, true);
-  // Sin resolver el match, ninguna búsqueda puede darse por concluida.
-  assert.ok(r.verificaciones_pendientes.includes(VERIF_LPB));
+  // Sin resolver el match, la búsqueda no puede darse por concluida.
   assert.ok(r.verificaciones_pendientes.includes(VERIF_ONU_OFAC));
+});
+
+test('listas · retirar la LPB no pone en verde un expediente con huecos', () => {
+  // Advertencia asentada como prueba: de los motivos de preliminaridad, la LPB
+  // era UNO. Quedan la declaración del Art. 17 sin formular, la documentación
+  // incompleta y las cuatro verificaciones que no tienen dónde registrarse.
+  const r = evaluarEBR(
+    sinOverride({
+      cotejo_listas: cotejo(),
+      realiza_actividad_vulnerable: null,
+      documentos_completos: false,
+    }),
+    AHORA
+  );
+
+  assert.equal(r.evaluacion_preliminar, true);
+  assert.ok(
+    r.motivos_preliminar.some((m) => /actividad vulnerable \(Art\. 17\)/.test(m)),
+    'el hueco del Art. 17 sigue vivo'
+  );
+  assert.ok(r.motivos_preliminar.some((m) => /Documentación del expediente incompleta/.test(m)));
+  assert.ok(r.motivos_preliminar.some((m) => /verificaciones sin ejecutar/.test(m)));
+  // Y ninguno de los que quedan es por la Lista de Personas Bloqueadas.
+  assert.equal(
+    r.motivos_preliminar.some((m) => /Personas Bloqueadas/.test(m)),
+    false
+  );
 });

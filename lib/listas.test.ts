@@ -22,6 +22,7 @@ import {
   normalizarClave,
   normalizarNombre,
   parsearCSV,
+  TIPOS_LISTA,
   type ClienteCotejable,
   type RegistroCotejable,
 } from './listas';
@@ -58,12 +59,22 @@ test('normalizarClave: RFC y CURP sobreviven a guiones y espacios', () => {
   assert.equal(normalizarClave(null), '');
 });
 
-test('esObligatoria: solo LPB y PEP_NACIONAL', () => {
-  assert.equal(esObligatoria('LPB'), true);
+test('esObligatoria: solo PEP_NACIONAL', () => {
   assert.equal(esObligatoria('PEP_NACIONAL'), true);
   assert.equal(esObligatoria('OFAC'), false);
   assert.equal(esObligatoria('SAT_69B'), false);
   assert.equal(esObligatoria('ONU'), false);
+});
+
+test('la LPB es tipo válido pero NO obligatorio', () => {
+  // Los dos lados de la decisión del 9 de septiembre de 2026, juntos porque se
+  // sostienen juntos: las Disposiciones del art. 226 Bis LMV no contemplan el
+  // capítulo de Lista de Personas Bloqueadas para los asesores en inversiones,
+  // así que deja de ser obligación —y el semáforo de /admin/listas puede
+  // ponerse en verde—, pero la lista sigue siendo cargable y cotejable porque
+  // el régimen de SOFOM E.N.R. sí la contempla y este módulo se reusa ahí.
+  assert.equal(esObligatoria('LPB'), false);
+  assert.ok(TIPOS_LISTA.includes('LPB'));
 });
 
 // ---------------------------------------------------------------------------

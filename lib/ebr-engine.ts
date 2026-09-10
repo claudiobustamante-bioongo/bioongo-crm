@@ -87,22 +87,29 @@ export interface CotejoListas {
 }
 
 /**
- * Qué tipo de lista cierra cuál de las dos verificaciones de listas del §12.
+ * Qué tipo de lista cierra la verificación de sanciones del §12.
  *
  * SAT_69B NO APARECE, y es el punto entero de tener dos constantes en vez de un
  * booleano: el 69-B es el listado de contribuyentes con operaciones
  * presuntamente inexistentes, materia fiscal, no una lista de sanciones.
  * Cotejarlo es diligencia real y merece constar en el expediente, pero no
- * satisface ninguna de las dos búsquedas que el Manual exige.
+ * satisface la búsqueda que el §12 exige.
+ *
+ * HUBO UNA SEGUNDA VERIFICACIÓN AQUÍ, la de la Lista de Personas Bloqueadas de
+ * la SHCP, y se retiró el 9 de septiembre de 2026: las Disposiciones del art.
+ * 226 Bis LMV no contemplan ese capítulo para los asesores en inversiones (ver
+ * el encabezado de `lib/listas.ts` para el fundamento completo). Mantenerla
+ * dejaba TODA evaluación en preliminar por una verificación que no se podía
+ * completar nunca.
+ *
+ * `'LPB'` sigue contando como lista de sanciones —es una lista de bloqueo, y
+ * cotejarla es cotejo real— pero no cierra esta verificación: la que sigue
+ * abierta es la de la ONU y OFAC, y la LPB no la cubre.
  */
-const CIERRA_VERIFICACION_LPB: readonly string[] = ['LPB'];
 const CIERRA_VERIFICACION_ONU_OFAC: readonly string[] = ['OFAC', 'ONU'];
 
 /** Los tipos cuyo cotejo permite afirmar que la búsqueda en sanciones se hizo. */
-const LISTAS_DE_SANCIONES: readonly string[] = [
-  ...CIERRA_VERIFICACION_LPB,
-  ...CIERRA_VERIFICACION_ONU_OFAC,
-];
+const LISTAS_DE_SANCIONES: readonly string[] = ['LPB', ...CIERRA_VERIFICACION_ONU_OFAC];
 
 /** Nombre legible por tipo, para los motivos. Espeja el de `/admin/listas`. */
 const NOMBRE_LISTA: Record<string, string> = {
@@ -370,18 +377,30 @@ export const ALIAS_PAISES: Record<string, string> = {
 };
 
 /**
- * Las siete verificaciones previas a la apertura (spec §12).
+ * Las verificaciones previas a la apertura (spec §12). Eran siete; quedan seis
+ * desde que se retiró la búsqueda en la Lista de Personas Bloqueadas de la SHCP
+ * (9 de septiembre de 2026, ver `CIERRA_VERIFICACION_ONU_OFAC`).
  *
  * PENDIENTE · la base no tiene columnas donde registrar que se ejecutaron. Solo
- * las dos de listas y la de PEP pueden darse por hechas, y eso a partir de los
+ * la de sanciones y la de PEP pueden darse por hechas, y eso a partir de los
  * overrides. Mientras esos campos no existan, toda evaluación sale preliminar,
  * que es exactamente lo que §12 ordena. Los campos de verificación son una
  * pieza aparte, todavía no construida.
+ *
+ * LAS DOS PRIMERAS SE NOMBRAN. El filtro de abajo las distinguía por posición
+ * (`i === 0`, `i === 1`), así que quitar un renglón de esta lista corría los
+ * índices y cambiaba en silencio qué verificación se daba por cerrada. Con
+ * constantes, moverlas de lugar no rompe nada.
  */
+export const VERIF_SANCIONES =
+  'Búsqueda en las listas del Consejo de Seguridad de la ONU y sanciones internacionales, incluida OFAC.';
+
+export const VERIF_PEP =
+  'Consulta de la condición de PEP propia y de familiares hasta segundo grado.';
+
 export const VERIFICACIONES: readonly string[] = [
-  'Búsqueda en la Lista de Personas Bloqueadas emitida por la SHCP.',
-  'Búsqueda en las listas del Consejo de Seguridad de la ONU y sanciones internacionales, incluida OFAC.',
-  'Consulta de la condición de PEP propia y de familiares hasta segundo grado.',
+  VERIF_SANCIONES,
+  VERIF_PEP,
   'Verificación de identidad contra el padrón del RENAPO.',
   'Validación de la Constancia de Situación Fiscal ante el SAT.',
   'Documentación del origen lícito de los recursos.',
@@ -915,9 +934,14 @@ export function determinarGrado(
   if (enListaBloqueadas) {
     return {
       grado: 'ALTO',
+      // No se nombra UNA lista: el motor recibe el conteo de coincidencias
+      // confirmadas, no de cuál lista salieron. Decir «Lista de Personas
+      // Bloqueadas» cuando el match vino de OFAC sería afirmar en el expediente
+      // algo que no consta. Cuál fue está en la bandeja de coincidencias.
       razon:
-        'Regla automática: coincidencia en Lista de Personas Bloqueadas. ' +
-        'Suspender operaciones y reportar en 24 horas vía SITI.',
+        'Regla automática: coincidencia confirmada en listas de bloqueo o sanciones ' +
+        '(Lista de Personas Bloqueadas, ONU u OFAC). Suspender operaciones y reportar en ' +
+        '24 horas vía SITI.',
       fundamento: FUNDAMENTOS.listasBloqueadas,
     };
   }
@@ -958,9 +982,7 @@ export function determinarGrado(
 interface EstadoListas {
   /** Solo una coincidencia CONFIRMADA lo pone en true. */
   enListaBloqueadas: boolean;
-  /** ¿Se ejecutó la búsqueda de la verificación 0 (LPB de la SHCP)? */
-  cierraLPB: boolean;
-  /** ¿Y la de la verificación 1 (ONU / OFAC)? */
+  /** ¿Se ejecutó la búsqueda de sanciones (ONU / OFAC)? */
   cierraOnuOfac: boolean;
   /** Fuente a declarar cuando el estado se derivó del cotejo cargado. */
   fuente: FuenteOverride | null;
@@ -982,11 +1004,10 @@ interface EstadoListas {
 function resolverListas(inputs: EBRInputs, ctx: Contexto): EstadoListas {
   // 1 · El override capturado a mano manda sobre el cotejo. Es la vía para
   //     asentar un screening ejecutado fuera del sistema, y quien lo captura
-  //     está declarando que ambas búsquedas se hicieron, no solo una.
+  //     está declarando que la búsqueda en sanciones se hizo.
   if (inputs.override_lista_bloqueadas !== undefined) {
     return {
       enListaBloqueadas: inputs.override_lista_bloqueadas === true,
-      cierraLPB: true,
       cierraOnuOfac: true,
       fuente: null,
     };
@@ -997,12 +1018,15 @@ function resolverListas(inputs: EBRInputs, ctx: Contexto): EstadoListas {
   // 2 · Sin cotejo, o con cotejo pero sin ninguna lista vigente: nada cambia
   //     respecto del comportamiento anterior.
   if (!cotejo || cotejo.listas.length === 0) {
-    marcarPreliminar(ctx, 'No consta la búsqueda en listas de personas bloqueadas (SHCP/ONU/OFAC).');
-    return { enListaBloqueadas: false, cierraLPB: false, cierraOnuOfac: false, fuente: null };
+    marcarPreliminar(
+      ctx,
+      'No consta la búsqueda en las listas del Consejo de Seguridad de la ONU ni en las de ' +
+        'sanciones internacionales (OFAC).'
+    );
+    return { enListaBloqueadas: false, cierraOnuOfac: false, fuente: null };
   }
 
   const tipos = cotejo.listas.map((l) => l.tipo);
-  const cierraLPB = tipos.some((t) => CIERRA_VERIFICACION_LPB.includes(t));
   const cierraOnuOfac = tipos.some((t) => CIERRA_VERIFICACION_ONU_OFAC.includes(t));
   const haySanciones = tipos.some((t) => LISTAS_DE_SANCIONES.includes(t));
 
@@ -1017,7 +1041,7 @@ function resolverListas(inputs: EBRInputs, ctx: Contexto): EstadoListas {
   // 3 · Coincidencia CONFIRMADA. Regla automática del §2: un humano ya revisó
   //     el careo y dijo que es la persona.
   if (cotejo.coincidencias_confirmadas > 0) {
-    return { enListaBloqueadas: true, cierraLPB, cierraOnuOfac, fuente: 'listas_csv_manual' };
+    return { enListaBloqueadas: true, cierraOnuOfac, fuente: 'listas_csv_manual' };
   }
 
   // 4 · Coincidencias PENDIENTES. Ni limpio ni bloqueado: sin resolver.
@@ -1029,33 +1053,51 @@ function resolverListas(inputs: EBRInputs, ctx: Contexto): EstadoListas {
         'grado ni suspende operaciones, pero la evaluación no puede darse por concluida ' +
         'hasta resolverla en la bandeja de listas de control.'
     );
-    return { enListaBloqueadas: false, cierraLPB: false, cierraOnuOfac: false, fuente: 'listas_csv_manual' };
+    return { enListaBloqueadas: false, cierraOnuOfac: false, fuente: 'listas_csv_manual' };
   }
 
   // 5 · Sin coincidencias, pero ninguna lista de sanciones entre las vigentes.
+  //     El cotejo vale —es debida diligencia y así se asienta—, pero la búsqueda
+  //     en sanciones no se ha hecho y eso sí deja la evaluación preliminar.
   if (!haySanciones) {
     marcarPreliminar(
       ctx,
-      `Cotejo ejecutado el ${fechaCotejo} contra ${detalle}, sin coincidencias. Ninguna de ` +
-        'ellas es lista de sanciones —el SAT 69-B es materia fiscal, no PLD—, así que NO ' +
-        'consta la búsqueda en la Lista de Personas Bloqueadas (SHCP) ni en las listas de ' +
-        'la ONU y OFAC.'
+      `Cotejo ejecutado el ${fechaCotejo} contra ${detalle}, sin coincidencias. Es medida de ` +
+        'debida diligencia reforzada e insumo de la metodología de evaluación de riesgos ' +
+        '(Capítulo II Bis de las Disposiciones), pero ninguna de esas listas es de ' +
+        'sanciones —el SAT 69-B es materia fiscal, no PLD—, así que NO consta la búsqueda en ' +
+        'las listas del Consejo de Seguridad de la ONU y de OFAC.'
     );
-    return { enListaBloqueadas: false, cierraLPB: false, cierraOnuOfac: false, fuente: 'listas_csv_manual' };
+    return { enListaBloqueadas: false, cierraOnuOfac: false, fuente: 'listas_csv_manual' };
   }
 
-  // 6 · Sin coincidencias y con sanciones cotejadas. Si falta la LPB, se dice:
-  //     el esfuerzo real consta, la obligación NO se da por cumplida.
-  if (!cierraLPB) {
-    marcarPreliminar(
-      ctx,
-      `Cotejo ejecutado el ${fechaCotejo} contra ${detalle}, sin coincidencias. NO sustituye ` +
-        'la búsqueda en la Lista de Personas Bloqueadas (SHCP), que sigue pendiente y es la ' +
-        'única que cierra la verificación del apartado III.10.'
-    );
-  }
+  // 6 · Sin coincidencias y con sanciones cotejadas. ESTO ES UNA OBSERVACIÓN, NO
+  //     UN MOTIVO PRELIMINAR, y el cambio es deliberado.
+  //
+  //     Hasta el 9 de septiembre de 2026 aquí se marcaba preliminar diciendo que
+  //     el cotejo «NO sustituye la búsqueda en la Lista de Personas Bloqueadas
+  //     (SHCP), que es la única que cierra la verificación del apartado III.10».
+  //     Eso dejó de ser cierto: las Disposiciones del art. 226 Bis LMV no
+  //     contemplan ese capítulo para los asesores en inversiones (fundamento
+  //     completo en el encabezado de `lib/listas.ts`). Con OFAC y el 69-B basta,
+  //     y sostener el motivo mantenía a los expedientes en preliminar por una
+  //     verificación que no se podía completar nunca.
+  //
+  //     El cotejo NO se degrada a trámite: sigue siendo debida diligencia
+  //     reforzada e insumo de la metodología de evaluación de riesgos del
+  //     Capítulo II Bis de las Disposiciones, que sí es obligatorio. Por eso se
+  //     asienta en `observaciones`, donde el revisor lo lee como lo que es:
+  //     esfuerzo ejecutado que consta en el expediente.
+  anotar(
+    ctx,
+    'LISTAS DE CONTROL',
+    `Cotejo ejecutado el ${fechaCotejo} contra ${detalle}, sin coincidencias. Se asienta como ` +
+      'medida de debida diligencia reforzada e insumo de la metodología de evaluación de ' +
+      'riesgos del Capítulo II Bis de las Disposiciones de carácter general a que se refiere ' +
+      'el artículo 226 Bis de la Ley del Mercado de Valores.'
+  );
 
-  return { enListaBloqueadas: false, cierraLPB, cierraOnuOfac, fuente: 'listas_csv_manual' };
+  return { enListaBloqueadas: false, cierraOnuOfac, fuente: 'listas_csv_manual' };
 }
 
 export function evaluarEBR(inputs: EBRInputs, ahora: Date = new Date()): EBRResultado {
@@ -1107,15 +1149,19 @@ export function evaluarEBR(inputs: EBRInputs, ahora: Date = new Date()): EBRResu
     marcarPreliminar(ctx, 'Documentación del expediente incompleta.');
   }
 
-  const verificacionesPendientes = VERIFICACIONES.filter((v, i) => {
-    // Cada búsqueda se cierra con SU lista: la 0 solo con la Lista de Personas
-    // Bloqueadas de la SHCP, la 1 con ONU u OFAC. Un booleano único para las dos
-    // daba por ejecutada la de la LPB en cuanto se cotejaba OFAC —o el SAT
-    // 69-B—, que es exactamente lo que no puede pasar: son obligaciones
-    // distintas y solo la primera cubre el apartado III.10.
-    if (i === 0) return !estadoListas.cierraLPB;
-    if (i === 1) return !estadoListas.cierraOnuOfac;
-    if (i === 2) return inputs.es_pep_nacional_declarado === null && inputs.override_pep === undefined;
+  const verificacionesPendientes = VERIFICACIONES.filter((v) => {
+    // Se identifican por su texto, no por su posición en el arreglo: mover o
+    // quitar un renglón de `VERIFICACIONES` no puede volver a cambiar en
+    // silencio qué verificación se da por cerrada.
+    //
+    // La búsqueda de sanciones la cierra ONU u OFAC, nunca el SAT 69-B: es
+    // materia fiscal, no PLD, y darla por hecha al cargar el 69-B es
+    // exactamente lo que no puede pasar.
+    if (v === VERIF_SANCIONES) return !estadoListas.cierraOnuOfac;
+    if (v === VERIF_PEP) {
+      return inputs.es_pep_nacional_declarado === null && inputs.override_pep === undefined;
+    }
+    // Las otras cuatro no tienen dónde registrarse en la base: siempre pendientes.
     return true;
   });
 

@@ -4,17 +4,35 @@
  * Lógica pura: no toca Supabase ni la red. Las rutas la alimentan y guardan el
  * resultado. Aquí solo se decide QUÉ coincide, nunca qué se hace al respecto.
  *
- * Manual de Cumplimiento, apartado III.10. Dos listas son obligatorias —la
- * Lista de Personas Bloqueadas (SHCP vía CNBV) y la de PEP nacionales—; OFAC,
- * SAT 69-B y ONU son diligencia adicional y NO cumplen esa obligación. Cargar
- * OFAC y creer que se cumplió III.10 es el error que `esObligatoria()` existe
- * para hacer imposible: la bandera se deriva del tipo, nunca se recibe.
+ * Una sola lista es obligatoria para el Asesor en Inversiones: la de PEP
+ * nacionales. OFAC, SAT 69-B y ONU son diligencia adicional y NO cumplen esa
+ * obligación. Cargar OFAC y creer que la obligación quedó cubierta es el error
+ * que `esObligatoria()` existe para hacer imposible: la bandera se deriva del
+ * tipo, nunca se recibe.
+ *
+ * LA LISTA DE PERSONAS BLOQUEADAS DEJÓ DE SER OBLIGACIÓN — LEER ANTES DE
+ * VOLVER A AGREGARLA
+ *
+ * La CNBV confirmó por escrito el 9 de septiembre de 2026 que las Disposiciones
+ * de carácter general a que se refiere el artículo 226 Bis de la Ley del Mercado
+ * de Valores NO contemplan el capítulo «Lista de Personas Bloqueadas» para los
+ * asesores en inversiones, y que el artículo 48 fracción XVIII del Reglamento
+ * Interior de la CNBV no los incluye entre los destinatarios de la lista.
+ * Cotejado contra el texto publicado en el DOF (2014, 2019 y 2023): el capítulo
+ * no existe. El fundamento de esta constante es ese oficio, no el apartado
+ * III.10 del Manual de Cumplimiento v3.0, que sigue listando la búsqueda y debe
+ * ajustarse fuera de este repositorio.
+ *
+ * `'LPB'` NO se retira del catálogo de tipos: sigue siendo una lista cargable y
+ * cotejable, solo que no obligatoria. El régimen de SOFOM E.N.R. sí la
+ * contempla y este módulo se reusa ahí. Retirar la capacidad técnica costaría
+ * reconstruirla; retirar la obligación es lo que corresponde.
  *
  * EL COTEJO ES SOLO EXACTO, a propósito. Sin fuzzy, sin distancia de edición,
- * sin fonética. Un falso positivo en la LPB cuesta suspenderle las operaciones
- * a un cliente que no era; una lista de coincidencias llena de ruido se deja de
- * revisar, que es la manera más silenciosa de incumplir. El precio de esta
- * decisión son los falsos negativos, y está documentado abajo.
+ * sin fonética. Un falso positivo en una lista de bloqueo cuesta suspenderle las
+ * operaciones a un cliente que no era; una lista de coincidencias llena de ruido
+ * se deja de revisar, que es la manera más silenciosa de incumplir. El precio de
+ * esta decisión son los falsos negativos, y está documentado abajo.
  */
 
 /** Tipos permitidos. Espeja el CHECK de `listas_control.tipo`. */
@@ -29,11 +47,14 @@ export const TIPOS_LISTA: readonly TipoLista[] = [
 ];
 
 /**
- * Las dos del apartado III.10. Hoy ninguna está cargada: no hay acceso al
- * módulo de SITI, así que la obligación sigue pendiente y esta constante
- * describe lo que se debe, no lo que se tiene.
+ * Las obligatorias para el Asesor en Inversiones. Desde el 9 de septiembre de
+ * 2026 queda solo la de PEP nacionales: ver la nota sobre la LPB en el
+ * encabezado de este archivo.
+ *
+ * Un régimen distinto —SOFOM E.N.R.— agregaría `'LPB'` aquí y el resto del
+ * módulo funcionaría sin tocar nada más. Esa es toda la diferencia.
  */
-export const TIPOS_OBLIGATORIOS: readonly TipoLista[] = ['LPB', 'PEP_NACIONAL'];
+export const TIPOS_OBLIGATORIOS: readonly TipoLista[] = ['PEP_NACIONAL'];
 
 export function esObligatoria(tipo: TipoLista): boolean {
   return TIPOS_OBLIGATORIOS.includes(tipo);

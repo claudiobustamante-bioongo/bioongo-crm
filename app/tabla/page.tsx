@@ -1,5 +1,21 @@
 import { createClient } from '@/lib/supabase-server';
 import Link from 'next/link';
+import { EbrMasivo } from './EbrMasivo';
+
+/**
+ * Cotejo de clientes · la cartera completa, y las corridas masivas que la
+ * reclasifican.
+ *
+ * Las corridas viven AQUÍ y no en una pantalla de administración aparte: quien
+ * autoriza una reclasificación de toda la cartera tiene que estar viendo a
+ * quién va a alcanzar. El panel de `/admin/ebr` se mudó a esta página y aquella
+ * ruta quedó como redirect.
+ *
+ * LA PUERTA ESCRITA NO ES UX. Una corrida masiva reclasifica expedientes de
+ * cumplimiento y no puede dispararse con un click: hay que escribir la palabra
+ * de confirmación, y la ruta la vuelve a exigir en el servidor (428 sin ella).
+ * Un agente, un doble click o un fetch perdido no alcanzan.
+ */
 
 export const dynamic = 'force-dynamic';
 
@@ -39,6 +55,21 @@ export default async function Tabla() {
         </div>
         <Link href="/" className="text-sm text-slate-500 hover:text-slate-800">← Volver a tarjetas</Link>
       </div>
+
+      {/* --- Corridas masivas ------------------------------------------------- */}
+
+      <section className="mb-8">
+        <h2 className="text-lg font-semibold mb-1">Corridas masivas</h2>
+        <p className="text-sm text-slate-500 mb-3">
+          Reclasifican expedientes sobre los {filas.length} clientes de arriba. Las dos exigen
+          confirmación escrita y dejan un lote identificado en bitácora.
+        </p>
+
+        <div className="grid gap-4 items-start lg:grid-cols-2">
+          <EbrMasivo />
+          <IpsMasivoBloqueado />
+        </div>
+      </section>
 
       <div className="overflow-x-auto border border-slate-200 rounded-lg">
         <table className="w-full text-sm">
@@ -94,5 +125,51 @@ export default async function Tabla() {
         </table>
       </div>
     </main>
+  );
+}
+
+/**
+ * IPS masivo · el hueco donde va a ir, con el motivo escrito de por qué no está.
+ *
+ * NO es un botón deshabilitado por cortesía. `perfil_riesgo` tiene restricción
+ * única en `codigo_cliente` y `/api/calcular-ips` actualiza la fila en sitio:
+ * una corrida masiva SOBRESCRIBIRÍA los 28 perfiles vigentes y no habría fila
+ * anterior a la que volver. `ebr_evaluaciones` no tiene ese problema porque es
+ * histórica —el lote agrega renglones—, y esa es toda la diferencia.
+ *
+ * Un botón que no se ve dejaría el hueco sin explicar y alguien lo construiría
+ * sin enterarse del problema. Uno que se ve y dice por qué está trabado es
+ * documentación en el único lugar donde se va a leer.
+ */
+function IpsMasivoBloqueado() {
+  return (
+    <section className="rounded-lg border border-dashed border-neutral-300 p-4 dark:border-neutral-700">
+      <header className="mb-3">
+        <h2 className="text-base font-semibold text-neutral-500">Cálculo IPS masivo</h2>
+        <p className="text-sm text-neutral-600 dark:text-neutral-400">
+          Correría el motor IPS sobre la cartera y recalcularía el perfil de inversión de
+          cada cliente.
+        </p>
+      </header>
+
+      <div className="flex flex-wrap items-center gap-3">
+        <button
+          disabled
+          className="rounded bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white opacity-40"
+        >
+          Calcular cartera
+        </button>
+        <span className="text-xs font-medium uppercase tracking-wide text-amber-700">
+          Bloqueado
+        </span>
+      </div>
+
+      <p className="mt-3 rounded border border-amber-400 bg-amber-50 p-2 text-sm text-amber-900 dark:bg-amber-950/30">
+        <strong>No se construye hasta historificar `perfil_riesgo`.</strong> La tabla tiene
+        restricción única por cliente y el cálculo actualiza la fila en sitio: una corrida
+        masiva sobrescribiría los 28 perfiles vigentes sin dejar versión anterior. El EBR sí
+        corre porque su tabla es histórica.
+      </p>
+    </section>
   );
 }

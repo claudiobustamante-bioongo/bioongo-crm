@@ -68,9 +68,15 @@ export async function POST(request: Request) {
     return Response.json({ error: 'El cliente no existe.' }, { status: 404 });
   }
 
-  // `perfil_riesgo` no tiene restricción única en codigo_cliente, así que puede
-  // haber varias evaluaciones. Se toma la más reciente; `nullsFirst: false`
-  // evita que una fila sin fecha desplace a una fechada (DESC pone NULL primero).
+  // CORRECCIÓN 10-sep-2026 · aquí decía que `perfil_riesgo` NO tiene restricción
+  // única en `codigo_cliente`. Sí la tiene: `perfil_riesgo_codigo_cliente_key`.
+  // Hay como máximo una fila por cliente, así que el `order`/`limit` de abajo es
+  // una red y no un desempate real. Lo que sigue siendo cierto: el UPDATE de más
+  // abajo PISA el resultado anterior y no queda versión previa en ningún lado.
+  // Por eso el IPS masivo está bloqueado en `/tabla` hasta historificar la tabla.
+  //
+  // `nullsFirst: false` evita que una fila sin fecha desplace a una fechada
+  // (DESC pone NULL primero).
   const { data: perfil, error: errorPerfil } = await supabase
     .from('perfil_riesgo')
     // El select debe ser un literal: supabase-js infiere los tipos parseando la
