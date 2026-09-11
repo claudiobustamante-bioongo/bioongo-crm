@@ -61,6 +61,59 @@ export function esObligatoria(tipo: TipoLista): boolean {
 }
 
 /**
+ * Listas de SANCIONES: las únicas cuya coincidencia CONFIRMADA eleva el grado a
+ * ALTO con alerta crítica y dispara la ruta reforzada —aviso, confirmación
+ * explícita y obligaciones asentadas en la bitácora—.
+ *
+ * Una sola definición para el motor EBR, la ruta que resuelve coincidencias, la
+ * carga de listas y la bandeja. Hasta el 11 de septiembre de 2026 vivía
+ * repartida y se contradecía: el motor elevaba a ALTO con CUALQUIER coincidencia
+ * confirmada —el SAT 69-B incluido— y las otras tres piezas solo reaccionaban a
+ * `'LPB'`. Al retirar la LPB como lista operativa y quedar OFAC en su lugar, el
+ * motor alarmaba y la bandeja se quedaba callada.
+ *
+ * SAT_69B NO ESTÁ: es materia fiscal —contribuyentes con operaciones
+ * presuntamente inexistentes—, no una lista de sanciones. Decisión tomada, no se
+ * reabre. PEP_NACIONAL tampoco: el PEP nacional no reclasifica de oficio
+ * (Manual de Cumplimiento, apartado 4.7).
+ *
+ * `'LPB'` SÍ está aunque dejó de ser obligatoria: sigue siendo una lista de
+ * bloqueo, y una coincidencia confirmada en ella pesa lo mismo que en OFAC.
+ */
+export const TIPOS_SANCIONES: readonly TipoLista[] = ['LPB', 'OFAC', 'ONU'];
+
+/** Recibe texto y no `TipoLista` porque el tipo llega de la base, sin garantía. */
+export function esListaDeSanciones(tipo: string | null | undefined): boolean {
+  return typeof tipo === 'string' && (TIPOS_SANCIONES as readonly string[]).includes(tipo);
+}
+
+/** Nombre legible por tipo, para motivos, avisos y la bandeja. */
+export const NOMBRE_LISTA: Record<TipoLista, string> = {
+  LPB: 'Lista de Personas Bloqueadas',
+  PEP_NACIONAL: 'PEP nacionales',
+  OFAC: 'OFAC',
+  SAT_69B: 'SAT 69-B',
+  ONU: 'ONU',
+};
+
+export function nombreLista(tipo: string): string {
+  return NOMBRE_LISTA[tipo as TipoLista] ?? tipo;
+}
+
+/**
+ * Las dos obligaciones que nacen al CONFIRMAR una coincidencia en una lista de
+ * sanciones. Manual de Cumplimiento, apartado 10.10.
+ *
+ * Son texto para quien decide, no acciones del sistema: ninguna parte de este
+ * código suspende operaciones ni presenta el reporte. Ver el encabezado de
+ * /api/resolver-coincidencia.
+ */
+export const OBLIGACIONES_SANCIONES = [
+  'Suspender de inmediato la realización de cualquier acto u operación con el Cliente.',
+  'Reportar a la CNBV dentro de las 24 horas siguientes, vía SITI, con la leyenda «Reporte de 24 horas».',
+] as const;
+
+/**
  * Tope del cuerpo de la petición al cargar una lista.
  *
  * Es el límite que Next impone cuando hay proxy —el `middleware.ts` de este

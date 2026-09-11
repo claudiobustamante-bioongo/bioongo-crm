@@ -18,6 +18,7 @@ import {
   MAX_FILAS_PREAMBULO,
   buscarCoincidencias,
   decodificarCSV,
+  esListaDeSanciones,
   esObligatoria,
   normalizarClave,
   normalizarNombre,
@@ -80,6 +81,24 @@ test('la LPB es tipo válido pero NO obligatorio', () => {
 // ---------------------------------------------------------------------------
 // Parseo
 // ---------------------------------------------------------------------------
+
+test('esListaDeSanciones: LPB, OFAC y ONU; nunca el SAT 69-B ni PEP nacionales', () => {
+  // Una sola definición para el motor, la ruta, la carga y la bandeja. Cuando
+  // vivía en cuatro lugares, tres decían «solo LPB» y el motor «cualquiera».
+  for (const tipo of ['LPB', 'OFAC', 'ONU']) {
+    assert.equal(esListaDeSanciones(tipo), true, tipo);
+  }
+
+  // El 69-B es materia fiscal: decisión tomada, no se reabre.
+  assert.equal(esListaDeSanciones('SAT_69B'), false);
+  // El PEP nacional no reclasifica de oficio (apartado 4.7).
+  assert.equal(esListaDeSanciones('PEP_NACIONAL'), false);
+
+  // El tipo llega de la base sin garantía: lo que no es un tipo exacto, no es.
+  for (const raro of ['', 'ofac', 'OFAC ', null, undefined]) {
+    assert.equal(esListaDeSanciones(raro), false, String(raro));
+  }
+});
 
 test('parsearCSV: encabezados básicos y normalización del nombre', () => {
   const csv = 'nombre,rfc,curp\nJosé Pérez,GOPJ800101AB1,GOPJ800101HDFXXX01\n';

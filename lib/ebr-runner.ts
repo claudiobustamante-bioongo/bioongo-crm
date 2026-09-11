@@ -129,9 +129,13 @@ export async function evaluarYGuardarEBR(
 
     // No se filtra por vigencia: retirar una lista no des-confirma un match ya
     // revisado por un humano. Las `descartada` sí quedan fuera.
+    //
+    // El tipo de la lista de origen viaja con cada coincidencia. Sin él el motor
+    // no distingue una coincidencia en OFAC —que eleva a ALTO— de una en el SAT
+    // 69-B, que es materia fiscal y no eleva nada.
     const { data: coincidencias, error: errorCoincidencias } = await supabase
       .from('listas_coincidencias')
-      .select('estado')
+      .select('estado, lista:listas_control ( tipo )')
       .eq('codigo_cliente', codigo_cliente)
       .in('estado', ['pendiente', 'confirmada']);
 

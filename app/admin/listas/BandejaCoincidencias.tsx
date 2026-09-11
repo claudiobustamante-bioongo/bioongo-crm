@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { esListaDeSanciones, nombreLista } from '@/lib/listas';
 
 /**
  * Bandeja de coincidencias pendientes.
@@ -112,13 +113,19 @@ export default function BandejaCoincidencias({
       return;
     }
 
-    // Confirmar contra la LPB dispara la suspensión de operaciones y el reporte
-    // de 24 horas. No es un clic más de la bandeja.
+    // Confirmar contra una lista de sanciones —LPB, OFAC u ONU— hace nacer la
+    // suspensión de operaciones y el reporte de 24 horas. No es un clic más de
+    // la bandeja. Es el mismo predicado que usan la ruta y el motor.
+    //
+    // Este diálogo y el recuadro rojo de abajo son TODO lo que hay: ni el
+    // cliente queda bloqueado ni se exige firma. Ver el pendiente del 23 de
+    // septiembre en /api/resolver-coincidencia.
     if (
       estado === 'confirmada' &&
-      c.lista?.tipo === 'LPB' &&
+      c.lista &&
+      esListaDeSanciones(c.lista.tipo) &&
       !window.confirm(
-        'Vas a CONFIRMAR una coincidencia contra la Lista de Personas Bloqueadas.\n\n' +
+        `Vas a CONFIRMAR una coincidencia contra una lista de sanciones (${nombreLista(c.lista.tipo)}).\n\n` +
           'Al confirmarla nacen dos obligaciones inmediatas: suspender operaciones con el ' +
           'cliente y reportar a la CNBV dentro de las 24 horas.\n\n¿Continuar?'
       )
@@ -176,8 +183,10 @@ export default function BandejaCoincidencias({
 
       {error && <p className="text-sm text-red-600 mb-3">{error}</p>}
 
-      {/* Las advertencias de la LPB se quedan a la vista aunque el renglón ya
-          haya salido de la bandeja: es lo que el revisor tiene que actuar. */}
+      {/* Las advertencias de listas de sanciones se quedan a la vista aunque el
+          renglón ya haya salido de la bandeja: es lo que el revisor tiene que
+          actuar. Viven solo en el estado de React y se pierden al recargar; la
+          bitácora conserva el texto, pero nada bloquea al cliente. */}
       {resueltas.map((id) => {
         const adv = advertencias[id];
         const aviso = avisos[id];
@@ -220,7 +229,7 @@ export default function BandejaCoincidencias({
           )}
 
           {pendientes.map((c) => {
-            const esLPB = c.lista?.tipo === 'LPB';
+            const esSanciones = esListaDeSanciones(c.lista?.tipo);
             const nombreCliente =
               [c.cliente?.nombre, c.cliente?.apellido_paterno, c.cliente?.apellido_materno]
                 .filter(Boolean)
@@ -230,13 +239,13 @@ export default function BandejaCoincidencias({
               <div
                 key={c.id}
                 className={`border rounded-lg px-4 py-4 ${
-                  esLPB ? 'border-red-300 bg-red-50' : 'border-slate-200'
+                  esSanciones ? 'border-red-300 bg-red-50' : 'border-slate-200'
                 }`}
               >
                 <div className="flex flex-wrap items-center gap-2">
                   <span
                     className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${
-                      esLPB ? 'bg-red-100 text-red-700' : 'bg-slate-100 text-slate-600'
+                      esSanciones ? 'bg-red-100 text-red-700' : 'bg-slate-100 text-slate-600'
                     }`}
                   >
                     {c.lista?.tipo ?? 'lista desconocida'}

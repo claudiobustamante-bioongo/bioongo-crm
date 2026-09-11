@@ -5,7 +5,9 @@ import {
   buscarCoincidencias,
   TOPE_BODY_LISTA,
   decodificarCSV,
+  esListaDeSanciones,
   esObligatoria,
+  nombreLista,
   parsearCSV,
   type ClienteCotejable,
   type CoincidenciaDetectada,
@@ -433,12 +435,15 @@ export async function POST(request: Request) {
     // Una coincidencia pendiente NO dispara todavía las obligaciones del
     // apartado 10.10: esas nacen al confirmarla. Decir lo contrario aquí haría
     // que se suspendieran operaciones por un homónimo sin revisar.
-    ...(tipo === 'LPB' && coincidencias.length > 0
+    //
+    // La urgencia es la de cualquier lista de sanciones, no solo la LPB: hasta
+    // el 11-sep-2026 una carga de OFAC con coincidencias no decía nada.
+    ...(esListaDeSanciones(tipo) && coincidencias.length > 0
       ? {
           alerta:
-            `Hay ${coincidencias.length} coincidencia(s) PENDIENTE(S) contra la Lista de ` +
-            'Personas Bloqueadas. Revísalas de inmediato: si se confirman, nacen la ' +
-            'suspensión de operaciones y el reporte de 24 horas a la CNBV.',
+            `Hay ${coincidencias.length} coincidencia(s) PENDIENTE(S) contra una lista de ` +
+            `sanciones (${nombreLista(tipo)}). Revísalas de inmediato: si se confirman, nacen ` +
+            'la suspensión de operaciones y el reporte de 24 horas a la CNBV.',
         }
       : {}),
   });

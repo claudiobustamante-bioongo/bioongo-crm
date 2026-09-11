@@ -54,6 +54,7 @@ import {
   normalizar,
   type OpcionFactor,
 } from './ebr-catalogo';
+import { TIPOS_LISTA, esListaDeSanciones, nombreLista } from './listas';
 
 // ---------------------------------------------------------------------------
 // Tipos
@@ -108,7 +109,18 @@ export interface CotejoListas {
   /** Las listas VIGENTES contra las que se cotejó. Vacío = ninguna cargada. */
   listas: ListaCotejadaEBR[];
   coincidencias_pendientes: number;
-  coincidencias_confirmadas: number;
+  /**
+   * Confirmadas, POR TIPO de la lista de origen. Hasta el 11-sep-2026 era un
+   * solo número, y un número no dice de qué lista salió el match: una
+   * coincidencia confirmada en el SAT 69-B habría subido al cliente a ALTO con
+   * alerta de 24 horas igual que una de OFAC. Se cambió el tipo, y no solo el
+   * cálculo, para que todo el que lo lea tenga que decidir qué hace con cada
+   * lista.
+   *
+   * Una coincidencia cuya lista no se pudo leer cuenta bajo
+   * `TIPO_LISTA_NO_LEGIBLE`.
+   */
+  coincidencias_confirmadas_por_tipo: Record<string, number>;
 }
 
 /**
@@ -130,24 +142,18 @@ export interface CotejoListas {
  * `'LPB'` sigue contando como lista de sanciones —es una lista de bloqueo, y
  * cotejarla es cotejo real— pero no cierra esta verificación: la que sigue
  * abierta es la de la ONU y OFAC, y la LPB no la cubre.
+ *
+ * Qué es lista de sanciones no se decide aquí: lo dice `TIPOS_SANCIONES` en
+ * `lib/listas.ts`, la misma definición que usan la bandeja y la ruta que
+ * resuelve coincidencias.
  */
 const CIERRA_VERIFICACION_ONU_OFAC: readonly string[] = ['OFAC', 'ONU'];
 
-/** Los tipos cuyo cotejo permite afirmar que la búsqueda en sanciones se hizo. */
-const LISTAS_DE_SANCIONES: readonly string[] = ['LPB', ...CIERRA_VERIFICACION_ONU_OFAC];
-
-/** Nombre legible por tipo, para los motivos. Espeja el de `/admin/listas`. */
-const NOMBRE_LISTA: Record<string, string> = {
-  LPB: 'Lista de Personas Bloqueadas',
-  PEP_NACIONAL: 'PEP nacionales',
-  OFAC: 'OFAC',
-  SAT_69B: 'SAT 69-B',
-  ONU: 'ONU',
-};
-
-function nombreLista(tipo: string): string {
-  return NOMBRE_LISTA[tipo] ?? tipo;
-}
+/**
+ * Llave de `coincidencias_confirmadas_por_tipo` para una coincidencia cuya lista
+ * de origen no se pudo leer o trae un tipo fuera del catálogo.
+ */
+export const TIPO_LISTA_NO_LEGIBLE = 'NO_LEGIBLE';
 
 /** ['A', 'B', 'C'] → 'A, B y C'. */
 function enumerarListas(partes: string[]): string {
@@ -1073,6 +1079,96 @@ export function determinarGrado(
 // Orquestación
 // ---------------------------------------------------------------------------
 
+/**
+ * Recorre las coincidencias CONFIRMADAS por tipo de lista, asienta lo que toca
+ * a cada una y devuelve cuántas son de sanciones —las únicas que activan la
+ * regla automática del §2— y cuántas no.
+ *
+ *   LPB, OFAC, ONU    cuentan para el bloqueo. El texto lo pone `determinarGrado`.
+ *   SAT 69-B          observación. Materia fiscal: no eleva el grado.
+ *   PEP nacionales    no bloquea; deja preliminar si la declaración no lo dice.
+ *   Tipo no legible   cuenta para el bloqueo Y deja un motivo preliminar.
+ */
+function procesarConfirmadas(
+  inputs: EBRInputs,
+  cotejo: CotejoListas,
+  ctx: Contexto
+): { sanciones: number; otras: number } {
+  let sanciones = 0;
+  let otras = 0;
+
+  for (const [tipo, n] of Object.entries(cotejo.coincidencias_confirmadas_por_tipo)) {
+    if (!(n > 0)) continue;
+
+    if (esListaDeSanciones(tipo)) {
+      sanciones += n;
+      continue;
+    }
+
+    if (tipo === 'SAT_69B') {
+      otras += n;
+      anotar(
+        ctx,
+        'LISTAS DE CONTROL',
+        `${n} coincidencia(s) CONFIRMADA(S) contra el SAT 69-B. Es materia fiscal, no lista ` +
+          'de sanciones: no eleva el grado, no genera alerta crítica ni dispara la ruta de 24 ' +
+          'horas. Consta en el expediente como insumo de debida diligencia.'
+      );
+      continue;
+    }
+
+    if (tipo === 'PEP_NACIONAL') {
+      // Criterio de Claudio Bustamante, 11 de septiembre de 2026. El expediente
+      // tiene que explicar las dos mitades: por qué no bloquea y por qué, aun
+      // así, la evaluación no puede darse por concluida.
+      otras += n;
+      const noBloquea =
+        'No reclasifica de oficio ni bloquea: el apartado 4.7 del Manual reserva la ' +
+        'reclasificación de oficio al PEP extranjero, y el PEP nacional se evalúa como ' +
+        'Supuesto 3, en concurrencia con los otros dos.';
+
+      if (inputs.es_pep_nacional_declarado === true) {
+        // La lista corrobora lo declarado: no hay nada que conciliar.
+        anotar(
+          ctx,
+          'LISTAS DE CONTROL',
+          `${n} coincidencia(s) CONFIRMADA(S) contra la lista de PEP nacionales, que ` +
+            `corrobora la declaración del Cliente. ${noBloquea}`
+        );
+      } else {
+        const declaracion =
+          inputs.es_pep_nacional_declarado === false ? 'niega ser PEP' : 'no consta';
+        marcarPreliminar(
+          ctx,
+          `${n} coincidencia(s) CONFIRMADA(S) contra la lista de PEP nacionales. ${noBloquea} ` +
+            `Pero la coincidencia deja SIN VERIFICAR la declaración del Cliente —que ` +
+            `${declaracion}—, y el Supuesto 3 se evalúa con esa declaración: el motor todavía ` +
+            'no toma la condición de PEP de las listas. La evaluación queda preliminar hasta ' +
+            'conciliar la declaración con la lista.'
+        );
+      }
+      continue;
+    }
+
+    // Tipo no legible o fuera del catálogo. Ante un origen desconocido se falla
+    // del lado conservador —una coincidencia confirmada no se da por limpia—,
+    // pero DICIÉNDOLO: un bug de datos que empiece a producir ALTOs tiene que
+    // verse en el expediente, no descubrirse después.
+    sanciones += n;
+    marcarPreliminar(
+      ctx,
+      `${n} coincidencia(s) CONFIRMADA(S) cuyo tipo de lista no fue legible` +
+        (tipo === TIPO_LISTA_NO_LEGIBLE ? '' : ` (se leyó «${tipo}»)`) +
+        '. Se tratan como coincidencia en listas de sanciones —ante un origen desconocido el ' +
+        'motor falla del lado conservador— y por eso elevan el grado a ALTO. Si la ' +
+        'clasificación no corresponde, lo que falló es la lectura de la lista de origen: ' +
+        'revisar la coincidencia en la bandeja de listas de control y reevaluar.'
+    );
+  }
+
+  return { sanciones, otras };
+}
+
 /** Lo que el cotejo de listas resuelve para el resto de la evaluación. */
 interface EstadoListas {
   /** Solo una coincidencia CONFIRMADA lo pone en true. */
@@ -1123,7 +1219,7 @@ function resolverListas(inputs: EBRInputs, ctx: Contexto): EstadoListas {
 
   const tipos = cotejo.listas.map((l) => l.tipo);
   const cierraOnuOfac = tipos.some((t) => CIERRA_VERIFICACION_ONU_OFAC.includes(t));
-  const haySanciones = tipos.some((t) => LISTAS_DE_SANCIONES.includes(t));
+  const haySanciones = tipos.some((t) => esListaDeSanciones(t));
 
   const detalle = enumerarListas(
     cotejo.listas.map((l) => `${nombreLista(l.tipo)} (corte ${l.fecha_lista})`)
@@ -1133,11 +1229,19 @@ function resolverListas(inputs: EBRInputs, ctx: Contexto): EstadoListas {
     .map((l) => l.fecha_cotejo)
     .reduce((min, f) => (f < min ? f : min));
 
-  // 3 · Coincidencia CONFIRMADA. Regla automática del §2: un humano ya revisó
-  //     el careo y dijo que es la persona.
-  if (cotejo.coincidencias_confirmadas > 0) {
+  // 3 · Coincidencias CONFIRMADAS. Un humano ya revisó el careo y dijo que es
+  //     la persona. Qué sigue depende de la lista de origen: solo una lista de
+  //     sanciones activa la regla automática del §2.
+  const confirmadas = procesarConfirmadas(inputs, cotejo, ctx);
+  if (confirmadas.sanciones > 0) {
     return { enListaBloqueadas: true, cierraOnuOfac, fuente: 'listas_csv_manual' };
   }
+
+  // Con una confirmada que no es de sanciones —un 69-B, un PEP nacional—,
+  // decir «sin coincidencias» a secas sería falso. Sin ninguna, el texto queda
+  // exactamente como antes.
+  const resultadoCotejo =
+    confirmadas.otras > 0 ? 'sin coincidencias en listas de sanciones' : 'sin coincidencias';
 
   // 4 · Coincidencias PENDIENTES. Ni limpio ni bloqueado: sin resolver.
   if (cotejo.coincidencias_pendientes > 0) {
@@ -1157,7 +1261,7 @@ function resolverListas(inputs: EBRInputs, ctx: Contexto): EstadoListas {
   if (!haySanciones) {
     marcarPreliminar(
       ctx,
-      `Cotejo ejecutado el ${fechaCotejo} contra ${detalle}, sin coincidencias. Es medida de ` +
+      `Cotejo ejecutado el ${fechaCotejo} contra ${detalle}, ${resultadoCotejo}. Es medida de ` +
         'debida diligencia reforzada e insumo de la metodología de evaluación de riesgos ' +
         '(Capítulo II Bis de las Disposiciones), pero ninguna de esas listas es de ' +
         'sanciones —el SAT 69-B es materia fiscal, no PLD—, así que NO consta la búsqueda en ' +
@@ -1186,7 +1290,7 @@ function resolverListas(inputs: EBRInputs, ctx: Contexto): EstadoListas {
   anotar(
     ctx,
     'LISTAS DE CONTROL',
-    `Cotejo ejecutado el ${fechaCotejo} contra ${detalle}, sin coincidencias. Se asienta como ` +
+    `Cotejo ejecutado el ${fechaCotejo} contra ${detalle}, ${resultadoCotejo}. Se asienta como ` +
       'medida de debida diligencia reforzada e insumo de la metodología de evaluación de ' +
       'riesgos del Capítulo II Bis de las Disposiciones de carácter general a que se refiere ' +
       'el artículo 226 Bis de la Ley del Mercado de Valores.'
@@ -1396,6 +1500,10 @@ function numeroONull(valor: unknown): number | null {
  * Las coincidencias llegan ya filtradas por la ruta a `pendiente` y
  * `confirmada`: una `descartada` es un homónimo que alguien revisó y descartó,
  * y contarla reabriría una decisión ya tomada.
+ *
+ * Cada coincidencia trae embebida su lista de origen (`lista: { tipo }`), y las
+ * confirmadas se cuentan por ese tipo: es lo que separa una coincidencia en
+ * OFAC de una en el SAT 69-B.
  */
 function construirCotejo(filas: FilasListas | null | undefined): CotejoListas | undefined {
   if (!filas) return undefined;
@@ -1407,17 +1515,40 @@ function construirCotejo(filas: FilasListas | null | undefined): CotejoListas | 
   }));
 
   let pendientes = 0;
-  let confirmadas = 0;
+  const confirmadasPorTipo: Record<string, number> = {};
   for (const c of filas.coincidencias) {
-    if (c.estado === 'confirmada') confirmadas++;
-    else if (c.estado === 'pendiente') pendientes++;
+    if (c.estado === 'confirmada') {
+      const tipo = tipoDeLaCoincidencia(c);
+      confirmadasPorTipo[tipo] = (confirmadasPorTipo[tipo] ?? 0) + 1;
+    } else if (c.estado === 'pendiente') {
+      pendientes++;
+    }
   }
 
   return {
     listas,
     coincidencias_pendientes: pendientes,
-    coincidencias_confirmadas: confirmadas,
+    coincidencias_confirmadas_por_tipo: confirmadasPorTipo,
   };
+}
+
+/**
+ * Tipo de la lista de origen de una coincidencia, tal como lo embebe el runner.
+ *
+ * PostgREST entrega objeto en una relación muchos-a-uno, pero se acepta también
+ * arreglo: si la forma cambia, la coincidencia debe seguir contando por su tipo
+ * y no caer en «no legible».
+ *
+ * Lo que no sea un tipo del catálogo cae en `TIPO_LISTA_NO_LEGIBLE`, que el
+ * motor trata como lista de sanciones y además deja dicho en un motivo.
+ */
+function tipoDeLaCoincidencia(c: Record<string, unknown>): string {
+  const lista = Array.isArray(c.lista) ? c.lista[0] : c.lista;
+  const tipo =
+    lista && typeof lista === 'object' ? (lista as Record<string, unknown>).tipo : undefined;
+  return typeof tipo === 'string' && (TIPOS_LISTA as readonly string[]).includes(tipo)
+    ? tipo
+    : TIPO_LISTA_NO_LEGIBLE;
 }
 
 export function construirInputsEBR(filas: FilasEBR): EBRInputs {

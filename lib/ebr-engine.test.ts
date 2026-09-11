@@ -13,6 +13,7 @@ import {
   ErrorEBR,
   VERIFICACIONES,
   VERIF_SANCIONES,
+  construirInputsEBR,
   evaluarEBR,
   type CotejoListas,
   type EBRInputs,
@@ -395,7 +396,7 @@ function cotejo(sobre: Partial<CotejoListas> = {}): CotejoListas {
       { tipo: 'SAT_69B', fecha_lista: '2026-07-31', fecha_cotejo: '2026-09-09' },
     ],
     coincidencias_pendientes: 0,
-    coincidencias_confirmadas: 0,
+    coincidencias_confirmadas_por_tipo: {},
     ...sobre,
   };
 }
@@ -446,6 +447,9 @@ test('listas · OFAC y SAT 69-B limpios: cierran la búsqueda y constan como deb
   assert.match(obs.nota, /OFAC \(corte 2026-08-31\)/);
   assert.match(obs.nota, /SAT 69-B \(corte 2026-07-31\)/);
   assert.match(obs.nota, /2026-09-09/);
+  // Sin ninguna confirmada, el texto es el mismo que antes de separar por tipo:
+  // la cartera no tiene coincidencias y ninguna evaluación debe cambiar.
+  assert.match(obs.nota, /, sin coincidencias\. Se asienta como/);
   assert.match(obs.nota, /debida diligencia reforzada/);
   assert.match(obs.nota, /Capítulo II Bis/);
   assert.match(obs.nota, /226 Bis/);
@@ -508,7 +512,7 @@ test('listas · coincidencia CONFIRMADA: ALTO automático y alerta del 10.10', (
     sinOverride({
       cotejo_listas: cotejo({
         listas: [{ tipo: 'LPB', fecha_lista: '2026-09-01', fecha_cotejo: '2026-09-09' }],
-        coincidencias_confirmadas: 1,
+        coincidencias_confirmadas_por_tipo: { LPB: 1 },
       }),
     }),
     AHORA
@@ -517,12 +521,143 @@ test('listas · coincidencia CONFIRMADA: ALTO automático y alerta del 10.10', (
   assert.equal(r.en_lista_bloqueadas, true);
   assert.equal(r.grado_riesgo, 'ALTO');
   assert.equal(r.regimen, 'Reforzado');
-  // La razón no afirma DE CUÁL lista salió el match: el motor recibe conteos,
-  // no tipos. Decir «Lista de Personas Bloqueadas» sobre una coincidencia de
-  // OFAC sería asentar en el expediente algo que no consta.
+  // La razón no afirma DE CUÁL lista salió el match. Decir «Lista de Personas
+  // Bloqueadas» sobre una coincidencia de OFAC sería asentar en el expediente
+  // algo que no consta; cuál fue está en la bandeja de coincidencias.
   assert.match(r.razon_clasificacion, /coincidencia confirmada/i);
   assert.ok(r.alerta_critica);
   assert.match(r.alerta_critica, /24 horas/);
+});
+
+// ---------------------------------------------------------------------------
+// Coincidencias confirmadas por tipo de lista (11 de septiembre de 2026)
+// ---------------------------------------------------------------------------
+//
+// Hasta esa fecha el motor recibía un solo número de confirmadas, y cualquiera
+// —el SAT 69-B incluido— subía al cliente a ALTO con alerta de 24 horas. Estos
+// casos pasan por `construirInputsEBR` con filas como las que lee el runner
+// (`estado` y la lista embebida), para fijar también que el tipo viaje desde la
+// base hasta el motor.
+
+function cotejoDesdeFilas(coincidencias: Record<string, unknown>[]): CotejoListas {
+  const inputs = construirInputsEBR({
+    cliente: {},
+    listas: {
+      vigentes: [
+        { tipo: 'OFAC', fecha_lista: '2026-08-31', fecha_carga: '2026-09-09T12:00:00Z' },
+        { tipo: 'SAT_69B', fecha_lista: '2026-07-31', fecha_carga: '2026-09-09T12:00:00Z' },
+      ],
+      coincidencias,
+    },
+  });
+  assert.ok(inputs.cotejo_listas);
+  return inputs.cotejo_listas;
+}
+
+test('listas · CONFIRMADA en LPB, OFAC u ONU: ALTO y alerta de 24 horas', () => {
+  for (const tipo of ['LPB', 'OFAC', 'ONU']) {
+    const r = evaluarEBR(
+      sinOverride({ cotejo_listas: cotejoDesdeFilas([{ estado: 'confirmada', lista: { tipo } }]) }),
+      AHORA
+    );
+
+    assert.equal(r.en_lista_bloqueadas, true, tipo);
+    assert.equal(r.grado_riesgo, 'ALTO', tipo);
+    assert.match(r.alerta_critica ?? '', /24 horas/, tipo);
+    // Una lista legible no deja motivo de ilegibilidad.
+    assert.equal(r.motivos_preliminar.some((m) => /no fue legible/.test(m)), false, tipo);
+  }
+});
+
+test('listas · CONFIRMADA en el SAT 69-B: materia fiscal, no bloquea', () => {
+  // Objeto o arreglo: PostgREST entrega objeto en muchos-a-uno, pero si la forma
+  // cambia la coincidencia debe seguir contando por su tipo.
+  for (const lista of [{ tipo: 'SAT_69B' }, [{ tipo: 'SAT_69B' }]]) {
+    const r = evaluarEBR(
+      sinOverride({ cotejo_listas: cotejoDesdeFilas([{ estado: 'confirmada', lista }]) }),
+      AHORA
+    );
+
+    assert.equal(r.en_lista_bloqueadas, false);
+    assert.equal(r.alerta_critica, null);
+    assert.equal(r.grado_riesgo, 'BAJO');
+
+    // No desaparece: consta, con la razón de por qué no pesa.
+    const obs = r.observaciones.find((o) => /CONFIRMADA\(S\) contra el SAT 69-B/.test(o.nota));
+    assert.ok(obs, 'la coincidencia confirmada tiene que constar en el expediente');
+    assert.match(obs.nota, /materia fiscal/);
+    assert.match(obs.nota, /no eleva el grado/);
+
+    // Y el cotejo de sanciones ya no dice «sin coincidencias» a secas.
+    const cotejo = r.observaciones.find((o) => /Cotejo ejecutado/.test(o.nota));
+    assert.ok(cotejo);
+    assert.match(cotejo.nota, /sin coincidencias en listas de sanciones/);
+  }
+});
+
+test('listas · tipo de lista no legible: ALTO conservador, y dicho en un motivo', () => {
+  // Fallar del lado conservador está bien; que un bug de datos empiece a
+  // producir ALTOs en silencio, no.
+  for (const lista of [null, undefined, {}, { tipo: 'FOO' }]) {
+    const r = evaluarEBR(
+      sinOverride({ cotejo_listas: cotejoDesdeFilas([{ estado: 'confirmada', lista }]) }),
+      AHORA
+    );
+
+    assert.equal(r.en_lista_bloqueadas, true, JSON.stringify(lista));
+    assert.equal(r.grado_riesgo, 'ALTO');
+    const motivo = r.motivos_preliminar.find((m) => /no fue legible/.test(m));
+    assert.ok(motivo, 'un ALTO por dato ilegible no puede ser silencioso');
+    assert.match(motivo, /conservador/);
+    assert.equal(r.evaluacion_preliminar, true);
+  }
+});
+
+test('listas · PEP nacional CONFIRMADO: no bloquea, y deja la declaración sin verificar', () => {
+  const filas = [{ estado: 'confirmada', lista: { tipo: 'PEP_NACIONAL' } }];
+
+  const r = evaluarEBR(sinOverride({ cotejo_listas: cotejoDesdeFilas(filas) }), AHORA);
+
+  assert.equal(r.en_lista_bloqueadas, false);
+  assert.equal(r.alerta_critica, null);
+  assert.equal(r.grado_riesgo, 'BAJO');
+
+  // El expediente explica las dos mitades.
+  const motivo = r.motivos_preliminar.find((m) => /PEP nacionales/.test(m));
+  assert.ok(motivo);
+  assert.match(motivo, /4\.7/); //                     por qué no bloquea
+  assert.match(motivo, /no reclasifica de oficio/i);
+  assert.match(motivo, /SIN VERIFICAR/); //            por qué queda preliminar
+  assert.match(motivo, /niega ser PEP/);
+  assert.equal(r.evaluacion_preliminar, true);
+
+  // Si el Cliente ya se declaró PEP nacional, la lista la corrobora: no hay
+  // declaración que conciliar, así que consta como observación y no como motivo.
+  const corrobora = evaluarEBR(
+    sinOverride({ es_pep_nacional_declarado: true, cotejo_listas: cotejoDesdeFilas(filas) }),
+    AHORA
+  );
+  assert.equal(corrobora.en_lista_bloqueadas, false);
+  assert.equal(corrobora.motivos_preliminar.some((m) => /PEP nacionales/.test(m)), false);
+  const obs = corrobora.observaciones.find((o) => /PEP nacionales/.test(o.nota));
+  assert.ok(obs);
+  assert.match(obs.nota, /corrobora/);
+  assert.match(obs.nota, /4\.7/);
+});
+
+test('listas · las descartadas no cuentan, las pendientes siguen igual', () => {
+  const r = evaluarEBR(
+    sinOverride({
+      cotejo_listas: cotejoDesdeFilas([
+        { estado: 'descartada', lista: { tipo: 'OFAC' } },
+        { estado: 'pendiente', lista: { tipo: 'SAT_69B' } },
+      ]),
+    }),
+    AHORA
+  );
+
+  assert.equal(r.en_lista_bloqueadas, false);
+  assert.ok(r.motivos_preliminar.some((m) => /1 coincidencia\(s\) PENDIENTE/.test(m)));
 });
 
 test('listas · coincidencia PENDIENTE: preliminar, pero sin suspender a nadie', () => {

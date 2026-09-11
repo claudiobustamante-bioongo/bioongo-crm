@@ -1,5 +1,7 @@
 import { createClient } from '@/lib/supabase-server';
 import { registrarEvento } from '@/lib/bitacora';
+import { FUNDAMENTOS } from '@/lib/ebr-engine';
+import { OBLIGACIONES_SANCIONES, esListaDeSanciones, nombreLista } from '@/lib/listas';
 
 /**
  * POST /api/resolver-coincidencia
@@ -17,6 +19,41 @@ import { registrarEvento } from '@/lib/bitacora';
  * cuándo. Permitir que un segundo UPDATE pise al primero borraría de la
  * evidencia quién decidió qué, que es justo lo que hay que poder mostrar.
  *
+ * QUÉ DISPARA LA RUTA REFORZADA
+ *
+ * Confirmar una coincidencia en una lista de SANCIONES —LPB, OFAC u ONU, según
+ * `TIPOS_SANCIONES` de `lib/listas.ts`— devuelve el aviso con las obligaciones
+ * del apartado 10.10 y las asienta en la bitácora. Es la misma regla con la que
+ * el motor EBR eleva a ALTO con alerta crítica. Hasta el 11 de septiembre de
+ * 2026 esta ruta solo reaccionaba a la LPB, y con OFAC como lista operativa el
+ * sistema se contradecía: el motor alarmaba y aquí no pasaba nada. El SAT 69-B
+ * no la dispara: es materia fiscal.
+ *
+ * LO QUE ESTA RUTA NO HACE — NI PARA LA LPB, NI ANTES NI AHORA
+ *
+ * No bloquea al cliente y no exige firma. Al confirmar una coincidencia en una
+ * lista de sanciones hace tres cosas, y ninguna obliga a nada: cambia el estado
+ * de la coincidencia, escribe las obligaciones como texto dentro de un asiento
+ * de bitácora que ningún proceso lee, y devuelve un aviso que la bandeja pinta
+ * en un recuadro que se pierde al recargar la página.
+ *
+ * Eso vale también para la LPB. Extender el aviso a OFAC y ONU no restauró
+ * ninguna paridad: el bloqueo y la firma nunca existieron, para ninguna lista.
+ *
+ * PENDIENTE · 23 de septiembre de 2026 · requiere DDL
+ *   1. Bloqueo del cliente: una marca persistente que impida operar con él
+ *      desde que se confirma la coincidencia hasta que se levante con firma.
+ *   2. Registro de firma: la validación del Oficial de Cumplimiento sobre la
+ *      confirmación, con quién firmó y cuándo.
+ * Mientras no existan, suspender operaciones depende de que alguien lea el
+ * aviso y actúe.
+ *
+ * EL SISTEMA NUNCA PRESENTA EL REPORTE DE 24 HORAS, ni ahora ni cuando existan
+ * el bloqueo y la firma: marca, bloquea y exige firma. Quién presenta y cuándo
+ * lo deciden Claudio Bustamante y el Oficial de Cumplimiento. Hay un test
+ * (route.test.ts) que falla si esta ruta llama a la red o escribe fuera de la
+ * coincidencia y la bitácora.
+ *
  * Ningún dato del cliente se escribe a logs: solo mensajes genéricos.
  */
 
@@ -24,17 +61,38 @@ const ESTADOS = ['confirmada', 'descartada'] as const;
 type EstadoResolucion = (typeof ESTADOS)[number];
 
 /**
- * Las dos obligaciones que nacen al confirmar una coincidencia contra la LPB.
+ * Qué pasa con la clasificación del cliente después de confirmar.
  *
- * Manual de Cumplimiento, apartado 10.10 (III.10). Se devuelven al llamador Y
- * se escriben dentro del motivo del asiento: una respuesta HTTP se pierde al
- * cerrar la pestaña, el asiento es lo que queda como evidencia de que la
- * obligación se conoció en el momento.
+ * Confirmar no reevalúa: el motor EBR lee las coincidencias cuando corre, no
+ * cuando se resuelven. Sin este aviso, confirmar parecería cerrar el expediente
+ * de riesgo, y la clasificación vigente sigue siendo la de antes.
  */
-const OBLIGACIONES_LPB = [
-  'Suspender de inmediato la realización de cualquier acto u operación con el Cliente.',
-  'Reportar a la CNBV dentro de las 24 horas siguientes, vía SITI, con la leyenda «Reporte de 24 horas».',
-] as const;
+function avisoTrasConfirmar(tipo: string, codigoCliente: string): string {
+  const base =
+    `La clasificación vigente de ${codigoCliente} no cambia con esta confirmación: el ` +
+    'motor EBR la lee en la próxima evaluación del cliente. ';
+
+  if (esListaDeSanciones(tipo)) {
+    return (
+      base +
+      'Al reevaluarlo quedará en riesgo ALTO, con alerta crítica, por coincidencia ' +
+      'confirmada en listas de sanciones.'
+    );
+  }
+  if (tipo === 'PEP_NACIONAL') {
+    return (
+      base +
+      'No eleva el grado —el PEP nacional no reclasifica de oficio—, pero la evaluación ' +
+      'quedará preliminar mientras la declaración PEP del Cliente no concuerde con la lista.'
+    );
+  }
+  return (
+    base +
+    `No eleva el grado: ${nombreLista(tipo)} no es lista de sanciones` +
+    (tipo === 'SAT_69B' ? ', es materia fiscal' : '') +
+    '. Constará en el expediente como debida diligencia.'
+  );
+}
 
 export async function POST(request: Request) {
   // --- 1. Cuerpo -----------------------------------------------------------
@@ -121,8 +179,8 @@ export async function POST(request: Request) {
 
   // --- 4. La lista de origen -----------------------------------------------
 
-  // El tipo decide si esta confirmación dispara las obligaciones del 10.10, así
-  // que se lee de la base y no se recibe del llamador.
+  // El tipo decide si esta confirmación dispara la ruta reforzada, así que se
+  // lee de la base y no se recibe del llamador.
   const { data: lista, error: errorLista } = await supabase
     .from('listas_control')
     .select('id, tipo, obligatoria, fuente, fecha_lista, vigente')
@@ -137,9 +195,8 @@ export async function POST(request: Request) {
     );
   }
 
-  const esLPB = lista.tipo === 'LPB';
   const confirmada = estado === 'confirmada';
-  const disparaObligaciones = esLPB && confirmada;
+  const disparaRutaReforzada = confirmada && esListaDeSanciones(lista.tipo);
 
   // --- 5. Resolución -------------------------------------------------------
 
@@ -182,8 +239,8 @@ export async function POST(request: Request) {
       `Coincidencia ${coincidencia.tipo_match} contra lista ${lista.tipo} ` +
       `(corte ${lista.fecha_lista}, fuente ${lista.fuente}) sobre el cliente ` +
       `${coincidencia.codigo_cliente}: ${estado.toUpperCase()}. Motivo: ${motivo}` +
-      (disparaObligaciones
-        ? ` · OBLIGACIONES INMEDIATAS (apartado 10.10): ${OBLIGACIONES_LPB.join(' ')}`
+      (disparaRutaReforzada
+        ? ` · OBLIGACIONES INMEDIATAS (apartado 10.10): ${OBLIGACIONES_SANCIONES.join(' ')}`
         : ''),
     usuario,
     campo: 'estado',
@@ -204,7 +261,9 @@ export async function POST(request: Request) {
       valor_cliente: coincidencia.valor_cliente,
       valor_lista: coincidencia.valor_lista,
       detectada_en: coincidencia.detectada_en,
-      dispara_obligaciones_lpb: disparaObligaciones,
+      // Se llamó `dispara_obligaciones_lpb` hasta el 11-sep-2026. Se renombró
+      // con cero asientos escritos: ninguna consulta tiene que buscar las dos.
+      dispara_ruta_reforzada: disparaRutaReforzada,
     },
   });
 
@@ -228,25 +287,18 @@ export async function POST(request: Request) {
       obligatoria: lista.obligatoria,
       fecha_lista: lista.fecha_lista,
     },
-    ...(disparaObligaciones
+    ...(disparaRutaReforzada
       ? {
           advertencia: {
-            titulo: 'Coincidencia CONFIRMADA en la Lista de Personas Bloqueadas.',
-            obligaciones: OBLIGACIONES_LPB,
+            titulo: `Coincidencia CONFIRMADA en lista de sanciones: ${nombreLista(lista.tipo)}.`,
+            obligaciones: OBLIGACIONES_SANCIONES,
             plazo: '24 horas contadas desde esta confirmación.',
-            fundamento: 'Manual de Cumplimiento, apartado 10.10 (III.10).',
+            // El mismo fundamento con el que el motor eleva a ALTO: la ruta y
+            // el expediente no pueden citar dos cosas distintas.
+            fundamento: FUNDAMENTOS.listasBloqueadas,
           },
         }
       : {}),
-    // Sin esto, confirmar una coincidencia parecería cerrar el expediente de
-    // riesgo del cliente, y no lo cierra: hoy el motor EBR no lee esta tabla.
-    ...(confirmada
-      ? {
-          pendiente:
-            'La EBR no consume todavía las coincidencias de listas: el motor sigue evaluando ' +
-            `con la declaración del cliente. Reevalúa a ${coincidencia.codigo_cliente} teniendo ` +
-            'esta confirmación a la vista.',
-        }
-      : {}),
+    ...(confirmada ? { pendiente: avisoTrasConfirmar(lista.tipo, coincidencia.codigo_cliente) } : {}),
   });
 }
