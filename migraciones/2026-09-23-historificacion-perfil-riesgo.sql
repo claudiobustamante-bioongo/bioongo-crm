@@ -67,8 +67,13 @@
 --
 -- VERIFICADO DESPUÉS DE EJECUTAR
 --
--- UPDATE de prueba sobre un perfil, dentro de una transacción revertida con
--- rollback para no dejar residuo en la base real. El trigger archivó:
+-- Esta migración NO actuó sobre ningún expediente en particular: el DDL crea
+-- tabla, trigger y políticas, y aplica a `perfil_riesgo` entera. Para probar
+-- que el trigger archiva se hizo un UPDATE sobre un perfil cualquiera
+-- (CSPFU1062), dentro de una transacción revertida con rollback. La elección de
+-- ese perfil es incidental —sirvió de prueba de humo y nada más—: la migración
+-- no le cambió un solo dato, ni a él ni a ningún otro cliente. El trigger
+-- archivó:
 --
 --   version           1
 --   operacion         update
@@ -301,18 +306,19 @@ commit;
 -- --- Verificación · se corrió aparte, después del commit -------------------
 --
 -- La transacción se revierte a propósito: prueba que el trigger archiva sin
--- dejar nada escrito en la base real.
+-- dejar nada escrito en la base real. El perfil es incidental, cualquiera
+-- sirve; se usó CSPFU1062 y quedó tal como estaba.
 --
 -- begin;
 --
 -- update perfil_riesgo
 --    set comentario_asesor = coalesce(comentario_asesor, '') || ' [prueba]'
---  where codigo_cliente = '<un perfil cualquiera>';
+--  where codigo_cliente = 'CSPFU1062';
 --
 -- select version, operacion, archivado_por, campos_cambiados,
 --        (select count(*) from jsonb_object_keys(snapshot)) as llaves_snapshot
 --   from perfil_riesgo_historico
---  where codigo_cliente = '<el mismo>';
+--  where codigo_cliente = 'CSPFU1062';
 --
 -- rollback;
 --
