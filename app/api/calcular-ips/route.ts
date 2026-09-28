@@ -1,27 +1,32 @@
-import { createClient } from '@/lib/supabase-server';
-import { calcularPerfilIPS, type IPSInputs } from '@/lib/ips-engine';
-import { registrarEvento } from '@/lib/bitacora';
-
 /**
  * POST /api/calcular-ips
  *
- * Recibe { codigo_cliente }, calcula el perfil IPS con el motor y guarda el
- * resultado en perfil_riesgo. Devuelve el resultado completo con bitácora.
+ * Envoltura delgada. Toda la lógica —lecturas, mapeo a IPSInputs, motor,
+ * guardado y bitácora— vive en lib/ips-runner.ts, que es también lo que
+ * llamará el lote masivo. Aquí solo se valida la entrada, se resuelve la sesión
+ * y se traduce el resultado a códigos HTTP. El comportamiento observable es
+ * idéntico al anterior, y hay un test que lo fija: route.test.ts.
  *
- * Ningún dato del cliente se escribe a logs: solo mensajes genéricos.
+ * El cálculo ACTUALIZA la fila de `perfil_riesgo` en sitio. Desde el
+ * 23-sep-2026 la versión anterior no se pierde: el trigger
+ * `trg_archivar_perfil_riesgo` la archiva en `perfil_riesgo_historico`.
+ *
+ * Ningún dato del cliente se escribe a logs: solo el código del error.
  */
 
-/** Convierte a número los `numeric` de Postgres, que pueden llegar como texto. */
-function aNumero(valor: unknown): number | undefined {
-  if (valor === null || valor === undefined) return undefined;
-  const n = typeof valor === 'number' ? valor : Number(valor);
-  return Number.isFinite(n) ? n : undefined;
-}
+import { createClient } from '@/lib/supabase-server';
+import { calcularYGuardarIPS, type CodigoErrorIPS } from '@/lib/ips-runner';
 
-/** Normaliza texto: cadenas vacías o solo espacios se tratan como ausentes. */
-function aTexto(valor: unknown): string | undefined {
-  return typeof valor === 'string' && valor.trim() ? valor : undefined;
-}
+const ESTATUS: Record<CodigoErrorIPS, number> = {
+  no_existe: 404,
+  sin_cuestionario: 404,
+  // Ver el PENDIENTE «ErrorIPS tipado» en lib/ips-runner.ts: hoy todo fallo del
+  // motor llega aquí como datos bloqueantes, y por eso sale como 400.
+  datos_bloqueantes: 400,
+  lectura: 500,
+  guardado: 500,
+  motor: 500,
+};
 
 export async function POST(request: Request) {
   let codigoCliente: unknown;
@@ -41,8 +46,6 @@ export async function POST(request: Request) {
 
   const supabase = await createClient();
 
-  // --- 1. Sesión ------------------------------------------------------------
-
   const {
     data: { user },
   } = await supabase.auth.getUser();
@@ -50,170 +53,24 @@ export async function POST(request: Request) {
     return Response.json({ error: 'No autorizado.' }, { status: 401 });
   }
 
-  // --- 2. Lectura -----------------------------------------------------------
+  const resultado = await calcularYGuardarIPS(codigoCliente, {
+    supabase,
+    usuario: user.email ?? user.id,
+  });
 
-  const { data: cliente, error: errorCliente } = await supabase
-    .from('clientes')
-    .select(
-      'nombre, apellido_paterno, apellido_materno, fecha_nacimiento, ocupacion, ingreso_neto_mensual'
-    )
-    .eq('codigo_cliente', codigoCliente)
-    .maybeSingle();
-
-  if (errorCliente) {
-    console.error('calcular-ips: fallo al leer clientes.');
-    return Response.json({ error: 'Error al leer el cliente.' }, { status: 500 });
-  }
-  if (!cliente) {
-    return Response.json({ error: 'El cliente no existe.' }, { status: 404 });
-  }
-
-  // CORRECCIÓN 10-sep-2026 · aquí decía que `perfil_riesgo` NO tiene restricción
-  // única en `codigo_cliente`. Sí la tiene: `perfil_riesgo_codigo_cliente_key`.
-  // Hay como máximo una fila por cliente, así que el `order`/`limit` de abajo es
-  // una red y no un desempate real. Lo que sigue siendo cierto: el UPDATE de más
-  // abajo PISA el resultado anterior y no queda versión previa en ningún lado.
-  // Por eso el IPS masivo está bloqueado en `/tabla` hasta historificar la tabla.
-  //
-  // `nullsFirst: false` evita que una fila sin fecha desplace a una fechada
-  // (DESC pone NULL primero).
-  const { data: perfil, error: errorPerfil } = await supabase
-    .from('perfil_riesgo')
-    // El select debe ser un literal: supabase-js infiere los tipos parseando la
-    // cadena, y una concatenación en runtime le deja `GenericStringError`.
-    .select(
-      'id, resultado_perfil, tolerancia_perdida, reaccion_caida_10, negocio_propio, percepcion_riesgo_empleo, prefiere_ingreso_seguro, no_puede_perder, colchon_liquidez, dependientes, situacion_habitacional, tiene_ahorros, ahorros, hipoteca, otras_deudas, objetivo_inversion, ganancia_deseada, horizonte'
-    )
-    .eq('codigo_cliente', codigoCliente)
-    .order('fecha_evaluacion', { ascending: false, nullsFirst: false })
-    .limit(1)
-    .maybeSingle();
-
-  if (errorPerfil) {
-    console.error('calcular-ips: fallo al leer perfil_riesgo.');
-    return Response.json(
-      { error: 'Error al leer el perfil de riesgo.' },
-      { status: 500 }
-    );
-  }
-  // Sin fila no hay dónde guardar: un update afectaría 0 renglones en silencio.
-  if (!perfil) {
-    return Response.json(
-      { error: 'Este cliente no tiene cuestionario de riesgo capturado.' },
-      { status: 404 }
-    );
-  }
-
-  // --- 3. Mapeo a IPSInputs -------------------------------------------------
-
-  const nombreCompleto = [
-    cliente.nombre,
-    cliente.apellido_paterno,
-    cliente.apellido_materno,
-  ]
-    .filter((parte): parte is string => typeof parte === 'string' && !!parte.trim())
-    .join(' ')
-    .trim();
-
-  const inputs: IPSInputs = {
-    nombreCompleto,
-    fechaNacimiento: aTexto(cliente.fecha_nacimiento) ?? '',
-    ocupacion: aTexto(cliente.ocupacion) ?? '',
-    // Si viene nulo o ilegible pasa NaN, y el motor lo reporta como bloqueante.
-    ingresoMensual: aNumero(cliente.ingreso_neto_mensual) ?? Number.NaN,
-
-    escenarioGananciaPerdida: aTexto(perfil.tolerancia_perdida),
-    reaccionCaida10: aTexto(perfil.reaccion_caida_10),
-    negocioPropio: aTexto(perfil.negocio_propio),
-    percepcionRiesgoEmpleo: aTexto(perfil.percepcion_riesgo_empleo),
-    prefiereIngresoSeguro: aTexto(perfil.prefiere_ingreso_seguro),
-    noPuedePerder: aTexto(perfil.no_puede_perder),
-
-    colchonLiquidez: aTexto(perfil.colchon_liquidez),
-    dependientes: aNumero(perfil.dependientes),
-    situacionHabitacional: aTexto(perfil.situacion_habitacional),
-    // `null` en la base significa "no se preguntó": debe llegar como undefined,
-    // no como false, o el motor lo leería como "declaró no tener ahorros".
-    tieneAhorros: perfil.tiene_ahorros ?? undefined,
-    ahorros: aNumero(perfil.ahorros),
-    hipoteca: aNumero(perfil.hipoteca),
-    otrasDeudas: aNumero(perfil.otras_deudas),
-
-    objetivoInversion: aTexto(perfil.objetivo_inversion),
-    gananciaEsperada: aTexto(perfil.ganancia_deseada),
-    horizonteDeclarado: aTexto(perfil.horizonte),
-  };
-
-  // --- 4. Cálculo -----------------------------------------------------------
-
-  let resultado;
-  try {
-    resultado = calcularPerfilIPS(inputs);
-  } catch (e) {
-    // Datos bloqueantes faltantes: no se escribe nada en la base.
-    return Response.json(
-      { error: e instanceof Error ? e.message : 'No se pudo calcular el perfil.' },
-      { status: 400 }
-    );
-  }
-
-  // --- 5. Guardado ----------------------------------------------------------
-
-  // Se actualiza por `id`, no por codigo_cliente: si el cliente tiene varias
-  // evaluaciones, filtrar por código sobrescribiría todas.
-  const { error: errorGuardado } = await supabase
-    .from('perfil_riesgo')
-    .update({
-      fase: resultado.fase,
-      tolerancia_puntos: resultado.toleranciaPuntos,
-      tolerancia_nivel: resultado.toleranciaNivel,
-      capacidad_puntos: resultado.capacidadPuntos,
-      capacidad_nivel: resultado.capacidadNivel,
-      puntuacion_ponderada: resultado.puntuacionPonderada,
-      resultado_perfil: resultado.perfilFinal,
-      bitacora_calculo: resultado.bitacora,
-      fecha_calculo: new Date().toISOString(),
-    })
-    .eq('id', perfil.id);
-
-  if (errorGuardado) {
-    console.error('calcular-ips: fallo al guardar el resultado.');
+  if (!resultado.ok) {
+    const status = ESTATUS[resultado.codigo_error ?? 'motor'] ?? 500;
+    console.error(`calcular-ips: ${resultado.codigo_error}.`);
     return Response.json(
       {
-        error: 'El perfil se calculó pero no se pudo guardar.',
-        codigo_cliente: codigoCliente,
-        nombreCompleto,
-        ...resultado,
+        error: resultado.error,
+        // Cuando el perfil se calculó pero no se pudo guardar, el llamador
+        // recibe el cálculo. Perder el guardado no debe perder el trabajo.
+        ...(resultado.payload ?? {}),
       },
-      { status: 500 }
+      { status }
     );
   }
 
-  // --- 6. Bitácora ----------------------------------------------------------
-
-  // Después del guardado y no antes: solo se asienta lo que efectivamente quedó
-  // escrito. Si el update hubiera fallado, la ruta ya salió por 500 y aquí no
-  // se llega.
-  await registrarEvento(supabase, {
-    entidad: 'perfil_riesgo',
-    entidadId: perfil.id,
-    accion: 'calculo_ips',
-    motivo:
-      `Cálculo del perfil IPS con el motor. Resultado: ${resultado.perfilFinal}, ` +
-      `fase ${resultado.fase}, puntuación ponderada ${resultado.puntuacionPonderada}.`,
-    usuario: user.email ?? user.id,
-    campo: 'resultado_perfil',
-    valorAnterior: perfil.resultado_perfil ?? null,
-    valorNuevo: resultado.perfilFinal,
-    // `resultado` ya trae dentro la bitácora del motor, así que no se duplica.
-    metadata: { codigo_cliente: codigoCliente, resultado },
-  });
-
-  // --- 7. Respuesta ---------------------------------------------------------
-
-  return Response.json({
-    codigo_cliente: codigoCliente,
-    nombreCompleto,
-    ...resultado,
-  });
+  return Response.json(resultado.payload);
 }
