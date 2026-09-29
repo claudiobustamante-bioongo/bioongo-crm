@@ -66,6 +66,18 @@ export type CodigoErrorIPS =
 export type ResultadoIPSDetallado = ResultadoLote<PerfilRiesgo> & {
   codigo_error?: CodigoErrorIPS;
   payload?: Record<string, unknown>;
+  /**
+   * El expediente traía un `perfil_ajustado` puesto a mano por el Asesor, y este
+   * recálculo acaba de dejarlo colgando de un cálculo que ya no existe.
+   *
+   * NO va en `payload`: la respuesta de /api/calcular-ips no cambia de forma, y
+   * hay un caso del arnés que lo fija. Esta bandera existe para que el resumen
+   * del lote pueda señalar al cliente como REVISIÓN PERSONAL.
+   *
+   * Solo se pone cuando el recálculo se guardó. Si el guardado falló, nada se
+   * sobrescribió y no hay ajuste colgando que revisar.
+   */
+  ajuste_manual?: boolean;
 };
 
 export type ContextoEjecucion = {
@@ -139,7 +151,7 @@ export async function calcularYGuardarIPS(
       // El select debe ser un literal: supabase-js infiere los tipos parseando
       // la cadena, y una concatenación en runtime le deja `GenericStringError`.
       .select(
-        'id, resultado_perfil, tolerancia_perdida, reaccion_caida_10, negocio_propio, percepcion_riesgo_empleo, prefiere_ingreso_seguro, no_puede_perder, colchon_liquidez, dependientes, situacion_habitacional, tiene_ahorros, ahorros, hipoteca, otras_deudas, objetivo_inversion, ganancia_deseada, horizonte',
+        'id, resultado_perfil, perfil_ajustado, tolerancia_perdida, reaccion_caida_10, negocio_propio, percepcion_riesgo_empleo, prefiere_ingreso_seguro, no_puede_perder, colchon_liquidez, dependientes, situacion_habitacional, tiene_ahorros, ahorros, hipoteca, otras_deudas, objetivo_inversion, ganancia_deseada, horizonte',
       )
       .eq('codigo_cliente', codigo_cliente)
       .order('fecha_evaluacion', { ascending: false, nullsFirst: false })
@@ -288,6 +300,9 @@ export async function calcularYGuardarIPS(
       motivos: [],
       campos_faltantes: [],
       evaluacion_id: perfil.id,
+      // Ver el PENDIENTE de la cabecera: el ajuste no se toca ni se borra, solo
+      // se señala. Decidir si sobrevive a un recálculo es criterio del Asesor.
+      ajuste_manual: perfil.perfil_ajustado !== null && perfil.perfil_ajustado !== undefined,
       payload,
     };
   } catch (e) {

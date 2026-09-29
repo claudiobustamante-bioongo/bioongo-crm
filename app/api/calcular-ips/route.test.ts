@@ -317,6 +317,24 @@ test('la ocupación jubilado fuerza la fase, y la respuesta lo declara', async (
   assert.equal(cuerpo.fase, 'Retiro');
 });
 
+/**
+ * El runner señala el ajuste manual con una bandera propia para que el resumen
+ * del lote pueda marcar al cliente como revisión personal. Esa bandera NO debe
+ * aparecer en la respuesta de la ruta: la ficha consume 15 llaves y ni una más.
+ */
+test('un expediente con perfil_ajustado responde con las mismas 15 llaves', async () => {
+  registro.perfil = { ...PERFIL, perfil_ajustado: 'Moderado' };
+  const { status, cuerpo } = await calcular();
+
+  assert.equal(status, 200);
+  assert.deepEqual(Object.keys(cuerpo).sort(), LLAVES_EXITO);
+  assert.equal(cuerpo.ajuste_manual, undefined, 'la bandera del runner no viaja al cliente');
+  assert.equal(cuerpo.perfil_ajustado, undefined, 'el ajuste del asesor tampoco');
+
+  // Y el UPDATE sigue escribiendo nueve columnas: no toca el ajuste.
+  assert.deepEqual(Object.keys(registro.updates[0].valores).sort(), LLAVES_UPDATE);
+});
+
 // ---------------------------------------------------------------------------
 // 2 · Cada código de error, con su forma
 // ---------------------------------------------------------------------------
