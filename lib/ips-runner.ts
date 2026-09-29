@@ -47,7 +47,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { calcularPerfilIPS, type IPSInputs } from '@/lib/ips-engine';
 import type { PerfilRiesgo } from '@/lib/ips-catalogo';
 import { registrarEvento } from '@/lib/bitacora';
-import type { ResultadoLote } from '@/lib/ebr-lote';
+import type { ResultadoLote, ResumenLote } from '@/lib/ebr-lote';
 
 export type CodigoErrorIPS =
   | 'no_existe'
@@ -79,6 +79,42 @@ export type ResultadoIPSDetallado = ResultadoLote<PerfilRiesgo> & {
    */
   ajuste_manual?: boolean;
 };
+
+/**
+ * El resumen del lote IPS: el genérico más lo que solo la capa IPS puede saber.
+ *
+ * Va aquí y no en el orquestador [core] porque `ajuste_manual` y `codigo_error`
+ * son conceptos del expediente IPS; el orquestador no debe conocerlos.
+ *
+ * NO lleva columna de «con huecos»: el IPS no tiene el concepto de evaluación
+ * preliminar que tiene el EBR, así que `campos_faltantes` viene siempre vacío y
+ * una columna de huecos saldría en blanco en todas las corridas.
+ */
+export type ResumenIPS = ResumenLote<PerfilRiesgo> & {
+  /**
+   * Clientes recalculados que traían `perfil_ajustado` del Asesor. Se listan por
+   * código y no solo se cuentan: el resumen tiene que decir A QUIÉN revisar.
+   */
+  ajuste_manual: string[];
+  /**
+   * Fallos agrupados por `codigo_error`. Agrupar importa: 28 clientes con
+   * `datos_bloqueantes` no son 28 expedientes incompletos, son un bug del motor,
+   * y eso solo se ve si el resumen los junta en vez de repetir el mensaje.
+   */
+  por_codigo_error: Record<string, string[]>;
+};
+
+/** Los eventos que emite /api/ips-masivo. El `fatal` lo agrega la ruta. */
+export type EventoIPS =
+  | { tipo: 'inicio'; lote_id: string; total: number; iniciado_en: string }
+  | {
+      tipo: 'avance';
+      lote_id: string;
+      indice: number;
+      total: number;
+      resultado: ResultadoIPSDetallado;
+    }
+  | { tipo: 'resumen'; lote_id: string; resumen: ResumenIPS };
 
 export type ContextoEjecucion = {
   /** Cliente de Supabase con la sesión del usuario (respeta RLS). */
