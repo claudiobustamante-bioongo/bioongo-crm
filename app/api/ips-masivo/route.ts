@@ -25,6 +25,7 @@ import { PERFILES, type PerfilRiesgo } from '@/lib/ips-catalogo';
 import {
   calcularYGuardarIPS,
   type EventoIPS,
+  type ResultadoIPSDetallado,
   type ResumenIPS,
 } from '@/lib/ips-runner';
 
@@ -127,28 +128,48 @@ export async function POST(req: NextRequest) {
         );
 
         for await (const evento of iterador) {
+          if (evento.tipo === 'inicio') {
+            controller.enqueue(linea(evento));
+            continue;
+          }
+
           if (evento.tipo === 'avance') {
-            const r = evento.resultado;
+            // El orquestador [core] pasa el resultado del runner tal cual, pero
+            // su tipo es el genérico: no conoce `ajuste_manual` ni
+            // `codigo_error`, y no debe conocerlos. Se reafirma aquí, que es la
+            // capa que sí los conoce.
+            //
+            // OJO CON EL CASO QUE NO TRAE ESOS CAMPOS: si una evaluación corta
+            // por timeout o revienta, el orquestador sustituye el resultado por
+            // uno mínimo —codigo_cliente, ok:false, error— SIN codigo_error ni
+            // bandera. Por eso abajo se exige `r.ok` antes de leer la bandera y
+            // `codigo_error` lleva `?? 'motor'`: no son defensas decorativas.
+            const r = evento.resultado as ResultadoIPSDetallado;
+
             if (r.ok && r.ajuste_manual) ajuste_manual.push(r.codigo_cliente);
             if (!r.ok) {
               const codigo_error = r.codigo_error ?? 'motor';
               (por_codigo_error[codigo_error] ??= []).push(r.codigo_cliente);
             }
-            controller.enqueue(linea(evento as EventoIPS));
+
+            controller.enqueue(
+              linea({
+                tipo: 'avance',
+                lote_id,
+                indice: evento.indice,
+                total: evento.total,
+                resultado: r,
+              }),
+            );
             continue;
           }
 
-          if (evento.tipo === 'resumen') {
-            const resumen: ResumenIPS = {
-              ...evento.resumen,
-              ajuste_manual,
-              por_codigo_error,
-            };
-            controller.enqueue(linea({ tipo: 'resumen', lote_id, resumen }));
-            continue;
-          }
-
-          controller.enqueue(linea(evento as EventoIPS));
+          const resumen: ResumenIPS = {
+            ...evento.resumen,
+            ajuste_manual,
+            por_codigo_error,
+          };
+          controller.enqueue(linea({ tipo: 'resumen', lote_id, resumen }));
         }
       } catch (e) {
         // Fallo del lote completo (conexión caída), no de un cliente.
