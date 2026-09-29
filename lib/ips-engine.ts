@@ -120,8 +120,14 @@ export interface IPSResultado {
 // Auxiliares
 // ---------------------------------------------------------------------------
 
-/** Primera banda cuyo `max` no es superado por el puntaje. */
-function resolverBanda<T>(puntaje: number, bandas: Banda<T>[]): T {
+/**
+ * Primera banda cuyo `max` no es superado por el puntaje.
+ *
+ * Exportada para poder fijar los cortes de las bandas en sus fronteras desde
+ * los tests contra la tabla real, en vez de contra una reimplementación de
+ * esta búsqueda. No la llama nadie fuera del motor y de sus pruebas.
+ */
+export function resolverBanda<T>(puntaje: number, bandas: Banda<T>[]): T {
   const banda = bandas.find((b) => puntaje <= b.max);
   return banda ? banda.valor : bandas[bandas.length - 1].valor;
 }
@@ -591,8 +597,19 @@ export function calcularPerfilIPS(
 
   const bruta =
     toleranciaNivel * PESO_TOLERANCIA + capacidadNivel * PESO_CAPACIDAD;
-  // Se redondea a 2 decimales para que las bandas no dependan del error
-  // de punto flotante (0.6 * 3 + 0.4 * 4 da 3.3999999999999995, no 3.4).
+  // Se redondea a 2 decimales para que las bandas no dependan del error de
+  // punto flotante. Cuatro de las 20 combinaciones de niveles lo arrastran; la
+  // peor es tolerancia 3 con capacidad 2, que da 2.5999999999999996 en vez de
+  // 2.6.
+  //
+  // CORRECCIÓN 29/09/2026: aquí se citaba `0.6 * 3 + 0.4 * 4` como ejemplo,
+  // afirmando que da 3.3999999999999995. Es falso: esa suma da exactamente 3.4.
+  //
+  // El redondeo es DEFENSIVO, no correctivo: con las bandas vigentes
+  // (2.0 / 2.5 / 3.5) ningún valor alcanzable cambia de banda por el error,
+  // porque ninguno de los cuatro desviados cae sobre un corte. Deja de serlo en
+  // cuanto un corte coincida con uno de esos valores, y entonces quitarlo
+  // reclasifica clientes en silencio.
   const puntuacionPonderada = Math.round(bruta * 100) / 100;
 
   const perfilCalculado = resolverBanda(puntuacionPonderada, BANDAS_PERFIL);

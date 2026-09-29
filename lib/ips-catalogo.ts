@@ -88,7 +88,7 @@ export const LIKERT: Record<string, number> = {
 };
 
 // ---------------------------------------------------------------------------
-// Capacidad de riesgo (holgura financiera) — puntaje máximo 19
+// Capacidad de riesgo (holgura financiera) — 6 componentes, rango 7–27
 // ---------------------------------------------------------------------------
 
 /** Fase del ciclo patrimonial. Máx 5. */
@@ -183,9 +183,17 @@ export type Banda<T> = { max: number; valor: T };
  * habitacional) el rango era 5–19; al sumar dependientes y cobertura de deuda
  * pasó a 7–27, y los cortes viejos dejaban los niveles altos casi vacíos.
  *
- * Valores anteriores, correspondientes al modelo de 4 componentes:
+ * VALORES HISTÓRICOS — NO SON LOS VIGENTES. Corresponden al modelo de 4
+ * componentes y se conservan solo para poder releer un cálculo viejo. Los
+ * vigentes son los de las constantes de más abajo; si necesitas los cortes,
+ * léelos ahí y no aquí:
  *   BANDAS_CAPACIDAD: <=8 -> 1, <=13 -> 2, <=18 -> 3, <=23 -> 4, resto -> 5
  *   BANDAS_PERFIL:    <=1.75 Alto, <=2.5 Moderado, <=3.4 Bajo, resto Libre
+ *
+ * Los cortes VIGENTES de perfil son <=2.0 Alto, <=2.5 Moderado, <=3.5 Bajo,
+ * resto Libre de Riesgo, y los fija `ips-catalogo.test.ts` en sus fronteras.
+ * Esta aclaración se agregó el 29/09/2026 porque el bloque se leyó como si
+ * fueran los cortes activos.
  *
  * BANDAS_TOLERANCIA no cambió: sus 6 reactivos y su rango 6–24 son los mismos.
  *
