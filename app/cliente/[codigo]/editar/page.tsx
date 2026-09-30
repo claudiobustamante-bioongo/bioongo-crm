@@ -3,6 +3,7 @@ import { useState, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase-browser';
 import Link from 'next/link';
+import { STATUS_EDITABLES, datosParaGuardar, esBaja } from '@/lib/status-cliente';
 
 const CAMPOS = [
   { key: 'nombre', label: 'Nombre(s)' },
@@ -17,8 +18,17 @@ const CAMPOS = [
   { key: 'celular', label: 'Celular' },
   { key: 'grado_estudios', label: 'Grado de estudios' },
   { key: 'ocupacion', label: 'Ocupación' },
-  { key: 'status', label: 'Status (vigente / inactivo)' },
 ];
+
+/**
+ * `status` va aparte, en un selector con los valores del CHECK menos 'baja'. La
+ * baja tiene su propio flujo (pide fecha y motivo, deja bitácora), y con un
+ * cliente ya de baja el status se muestra y no se envía.
+ *
+ * Esta pantalla no borra clientes: el expediente se conserva por PLD y la
+ * política DELETE de `clientes` se retiró el 30-sep-2026.
+ */
+const CAMPO_STATUS = 'status';
 
 export default function EditarCliente() {
   const { codigo } = useParams<{ codigo: string }>();
@@ -26,6 +36,7 @@ export default function EditarCliente() {
   const [form, setForm] = useState<Record<string, string>>({});
   const [cargando, setCargando] = useState(true);
   const [mensaje, setMensaje] = useState('');
+  const [statusActual, setStatusActual] = useState<string | null>(null);
 
   const supabase = createClient();
 
@@ -39,7 +50,9 @@ export default function EditarCliente() {
       if (data) {
         const limpio: Record<string, string> = {};
         CAMPOS.forEach((c) => { limpio[c.key] = data[c.key] ?? ''; });
+        limpio[CAMPO_STATUS] = data[CAMPO_STATUS] ?? '';
         setForm(limpio);
+        setStatusActual(data[CAMPO_STATUS] ?? null);
       }
       setCargando(false);
     }
@@ -47,8 +60,7 @@ export default function EditarCliente() {
   }, [codigo]);
 
   async function guardar() {
-    const datos: Record<string, string | null> = {};
-    Object.keys(form).forEach((k) => { datos[k] = form[k] === '' ? null : form[k]; });
+    const datos = datosParaGuardar(form, statusActual);
 
     const { error } = await supabase
       .from('clientes')
@@ -59,17 +71,6 @@ export default function EditarCliente() {
       setMensaje('Error: ' + error.message);
     } else {
       router.push(`/cliente/${codigo}`);
-    }
-  }
-
-  async function eliminar() {
-    const ok = window.confirm('¿Eliminar este cliente permanentemente? Esta acción no se puede deshacer.');
-    if (!ok) return;
-    const { error } = await supabase.from('clientes').delete().eq('codigo_cliente', codigo);
-    if (error) {
-      setMensaje('Error al eliminar: ' + error.message);
-    } else {
-      router.push('/');
     }
   }
 
@@ -92,17 +93,35 @@ export default function EditarCliente() {
             />
           </div>
         ))}
+        <div className="flex flex-col gap-1">
+          <label className="text-sm text-slate-600">Status</label>
+          {esBaja(statusActual) ? (
+            <p className="border border-slate-200 bg-slate-50 rounded px-3 py-2 text-slate-600">
+              baja — se gestiona desde su propio flujo, no desde esta pantalla
+            </p>
+          ) : (
+            <select
+              value={form[CAMPO_STATUS] ?? ''}
+              onChange={(e) => setForm({ ...form, [CAMPO_STATUS]: e.target.value })}
+              className="border border-slate-300 rounded px-3 py-2"
+            >
+              {/* Un status vacío o fuera del CHECK se ve, no se disfraza. */}
+              {!STATUS_EDITABLES.includes(form[CAMPO_STATUS] as (typeof STATUS_EDITABLES)[number]) && (
+                <option value={form[CAMPO_STATUS] ?? ''} disabled>
+                  {form[CAMPO_STATUS] || '(sin status)'}
+                </option>
+              )}
+              {STATUS_EDITABLES.map((s) => (
+                <option key={s} value={s}>{s}</option>
+              ))}
+            </select>
+          )}
+        </div>
         <button
           onClick={guardar}
           className="bg-slate-900 text-white rounded py-2 mt-2 hover:bg-slate-700"
         >
           Guardar cambios
-        </button>
-        <button
-          onClick={eliminar}
-          className="border border-red-400 text-red-600 bg-white rounded py-2 hover:bg-red-50 transition-colors"
-        >
-          Eliminar cliente
         </button>
         {mensaje && <p className="text-sm text-red-600 mt-2">{mensaje}</p>}
       </div>
