@@ -28,17 +28,16 @@ import {
   type ResultadoIPSDetallado,
   type ResumenIPS,
 } from '@/lib/ips-runner';
+import { partirCartera, type AlcanceMasivo, type FilaCartera } from '@/lib/cartera';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 /** 36 clientes en secuencia. Súbelo si la cartera crece. */
 export const maxDuration = 300;
 
-type Alcance = 'todos' | 'vigentes' | 'seleccion';
-
 type Body = {
   confirmacion?: string;
-  alcance?: Alcance;
+  alcance?: AlcanceMasivo;
   codigos?: string[];
 };
 
@@ -69,8 +68,9 @@ export async function POST(req: NextRequest) {
   }
 
   // --- Selección de la cartera ------------------------------------------
-  const alcance: Alcance = body.alcance ?? 'todos';
+  const alcance: AlcanceMasivo = body.alcance ?? 'todos';
   let codigos: string[];
+  let excluidos_baja: string[] = [];
 
   if (alcance === 'seleccion') {
     codigos = (body.codigos ?? []).filter(
@@ -85,15 +85,16 @@ export async function POST(req: NextRequest) {
   } else {
     // Por defecto, TODOS. Un lote selectivo necesitaría un campo «última
     // corrección de datos» que no existe, así que se reevalúa a todos y los que
-    // no tienen cuestionario salen declarados como tales en el resumen.
-    let q = supabase.from('clientes').select('codigo_cliente');
+    // no tienen cuestionario salen declarados como tales en el resumen. Las
+    // BAJAS no entran: cuenta cerrada, se excluyen y el resumen las lista.
+    let q = supabase.from('clientes').select('codigo_cliente, status');
     if (alcance === 'vigentes') q = q.eq('status', 'vigente');
 
     const { data, error } = await q.order('codigo_cliente');
     if (error) {
       return Response.json({ error: error.message }, { status: 500 });
     }
-    codigos = (data ?? []).map((r) => r.codigo_cliente as string);
+    ({ codigos, excluidos_baja } = partirCartera((data ?? []) as FilaCartera[]));
   }
 
   if (codigos.length === 0) {
@@ -168,6 +169,7 @@ export async function POST(req: NextRequest) {
             ...evento.resumen,
             ajuste_manual,
             por_codigo_error,
+            excluidos_baja,
           };
           controller.enqueue(linea({ tipo: 'resumen', lote_id, resumen }));
         }

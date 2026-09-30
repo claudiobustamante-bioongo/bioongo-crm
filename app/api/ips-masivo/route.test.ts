@@ -30,6 +30,10 @@ const registro = vi.hoisted(() => ({
   filtroVigente: false,
   usuario: null as { id: string; email?: string } | null,
   codigos: [] as string[],
+  /** Subconjunto de `codigos` con status 'baja'. */
+  bajas: [] as string[],
+  /** Códigos que el runner llegó a recibir. */
+  corridos: [] as string[],
   errorClientes: false,
   runner: (codigo: string): Promise<unknown> =>
     Promise.resolve({ codigo_cliente: codigo, ok: true, grado: 'Alto' }),
@@ -56,7 +60,10 @@ vi.mock('@/lib/supabase-server', () => ({
           order: async () => ({
             data: registro.errorClientes
               ? null
-              : registro.codigos.map((c) => ({ codigo_cliente: c })),
+              : registro.codigos.map((c) => ({
+                  codigo_cliente: c,
+                  status: registro.bajas.includes(c) ? 'baja' : 'vigente',
+                })),
             error: registro.errorClientes ? { message: 'fallo simulado' } : null,
           }),
         };
@@ -67,7 +74,10 @@ vi.mock('@/lib/supabase-server', () => ({
 }));
 
 vi.mock('@/lib/ips-runner', () => ({
-  calcularYGuardarIPS: (codigo: string) => registro.runner(codigo),
+  calcularYGuardarIPS: (codigo: string) => {
+    registro.corridos.push(codigo);
+    return registro.runner(codigo);
+  },
 }));
 
 import { POST } from './route';
@@ -106,6 +116,8 @@ beforeEach(() => {
   registro.filtroVigente = false;
   registro.usuario = { id: 'u-1', email: 'asesor@prueba.test' };
   registro.codigos = ['PRUEBA-A', 'PRUEBA-B', 'PRUEBA-C'];
+  registro.bajas = [];
+  registro.corridos = [];
   registro.errorClientes = false;
   registro.runner = async (codigo) => ok(codigo, 'Alto');
 });
@@ -202,6 +214,37 @@ test('si falla la lectura de clientes: 500', async () => {
   registro.errorClientes = true;
   const res = await correr({ confirmacion: 'CALCULAR' });
   assert.equal(res.status, 500);
+});
+
+test('alcance "todos": las bajas no se recalculan y el resumen las lista', async () => {
+  registro.bajas = ['PRUEBA-B'];
+  const eventos = await eventosDe(await correr({ confirmacion: 'CALCULAR' }));
+
+  assert.deepEqual(registro.corridos, ['PRUEBA-A', 'PRUEBA-C'], 'la baja no llega al runner');
+  assert.equal(eventos[0].total, 2, 'el total del lote no cuenta la baja');
+  const resumen = eventos.at(-1)!.resumen as Fila;
+  assert.deepEqual(resumen.excluidos_baja, ['PRUEBA-B']);
+  assert.equal(resumen.ok, 2);
+});
+
+test('sin bajas, el resumen trae excluidos_baja vacío (0, no ausente)', async () => {
+  const eventos = await eventosDe(await correr({ confirmacion: 'CALCULAR' }));
+  assert.deepEqual((eventos.at(-1)!.resumen as Fila).excluidos_baja, []);
+});
+
+test('si toda la cartera está de baja: 400 y no arranca lote', async () => {
+  registro.bajas = [...registro.codigos];
+  const res = await correr({ confirmacion: 'CALCULAR' });
+  assert.equal(res.status, 400);
+  assert.deepEqual(registro.corridos, []);
+});
+
+test('alcance "seleccion" respeta los códigos escritos a mano, aunque sean baja', async () => {
+  registro.bajas = ['PRUEBA-B'];
+  await eventosDe(
+    await correr({ confirmacion: 'CALCULAR', alcance: 'seleccion', codigos: ['PRUEBA-B'] }),
+  );
+  assert.deepEqual(registro.corridos, ['PRUEBA-B']);
 });
 
 // ---------------------------------------------------------------------------

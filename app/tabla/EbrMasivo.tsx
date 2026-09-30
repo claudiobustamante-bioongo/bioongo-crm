@@ -11,6 +11,7 @@
 
 import { useCallback, useRef, useState } from 'react';
 import type { EventoLote, ResultadoEBR, ResumenLote } from '@/lib/ebr-lote';
+import type { ConExcluidos } from '@/lib/cartera';
 
 type Alcance = 'todos' | 'vigentes';
 type Fase = 'idle' | 'confirmando' | 'corriendo' | 'terminado' | 'error';
@@ -21,7 +22,7 @@ export function EbrMasivo() {
   const [confirmacion, setConfirmacion] = useState('');
   const [progreso, setProgreso] = useState({ hechos: 0, total: 0 });
   const [resultados, setResultados] = useState<ResultadoEBR[]>([]);
-  const [resumen, setResumen] = useState<ResumenLote | null>(null);
+  const [resumen, setResumen] = useState<(ResumenLote & ConExcluidos) | null>(null);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -75,7 +76,8 @@ export function EbrMasivo() {
             setProgreso({ hechos: ev.indice, total: ev.total });
             setResultados((r) => [...r, ev.resultado]);
           } else if (ev.tipo === 'resumen') {
-            setResumen(ev.resumen);
+            // La ruta completa el resumen del orquestador con `excluidos_baja`.
+            setResumen(ev.resumen as ResumenLote & ConExcluidos);
           } else if (ev.tipo === 'fatal') {
             throw new Error(ev.error);
           }
@@ -117,7 +119,7 @@ export function EbrMasivo() {
               onChange={(e) => setAlcance(e.target.value as Alcance)}
               className="rounded border px-2 py-1 text-sm"
             >
-              <option value="todos">Todos los registros</option>
+              <option value="todos">Todos los registros (sin bajas)</option>
               <option value="vigentes">Solo vigentes</option>
             </select>
           </label>
@@ -209,6 +211,13 @@ export function EbrMasivo() {
             <Dato n={resumen.cambios.length} l="Cambios de grado" />
             <Dato n={resumen.fallidos} l="Fallidos" />
           </div>
+
+          <p className="text-xs text-slate-600 dark:text-slate-400">
+            Excluidos por baja: {resumen.excluidos_baja?.length ?? 0}
+            {(resumen.excluidos_baja?.length ?? 0) > 0 && (
+              <> · <span className="font-mono">{resumen.excluidos_baja.join(', ')}</span></>
+            )}
+          </p>
 
           {resumen.cambios.length > 0 && (
             <Bloque titulo="Cambios de grado — revisión personal obligatoria">

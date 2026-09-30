@@ -48,6 +48,7 @@ import { calcularPerfilIPS, type IPSInputs } from '@/lib/ips-engine';
 import type { PerfilRiesgo } from '@/lib/ips-catalogo';
 import { registrarEvento } from '@/lib/bitacora';
 import type { ResultadoLote, ResumenLote } from '@/lib/ebr-lote';
+import type { ConExcluidos } from '@/lib/cartera';
 
 export type CodigoErrorIPS =
   | 'no_existe'
@@ -102,7 +103,7 @@ export type ResumenIPS = ResumenLote<PerfilRiesgo> & {
    * y eso solo se ve si el resumen los junta en vez de repetir el mensaje.
    */
   por_codigo_error: Record<string, string[]>;
-};
+} & ConExcluidos;
 
 /** Los eventos que emite /api/ips-masivo. El `fatal` lo agrega la ruta. */
 export type EventoIPS =

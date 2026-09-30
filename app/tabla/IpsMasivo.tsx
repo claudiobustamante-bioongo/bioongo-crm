@@ -139,7 +139,7 @@ export function IpsMasivo() {
               onChange={(e) => setAlcance(e.target.value as Alcance)}
               className="rounded border px-2 py-1 text-sm"
             >
-              <option value="todos">Todos los registros</option>
+              <option value="todos">Todos los registros (sin bajas)</option>
               <option value="vigentes">Solo vigentes</option>
             </select>
           </label>
@@ -244,6 +244,13 @@ export function IpsMasivo() {
             <Dato n={resumen.ajuste_manual.length} l="Con ajuste manual" />
             <Dato n={resumen.fallidos} l="Fallidos" />
           </div>
+
+          <p className="text-xs text-slate-600 dark:text-slate-400">
+            Excluidos por baja: {resumen.excluidos_baja?.length ?? 0}
+            {(resumen.excluidos_baja?.length ?? 0) > 0 && (
+              <> · <span className="font-mono">{resumen.excluidos_baja.join(', ')}</span></>
+            )}
+          </p>
 
           {/* Distribución en el orden de PERFILES: de más a menos riesgo. */}
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">

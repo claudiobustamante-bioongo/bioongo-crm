@@ -16,19 +16,28 @@
 
 import { NextRequest } from 'next/server';
 import { createClient } from '@/lib/supabase-server';
-import { correrLoteEBR, type EventoLote } from '@/lib/ebr-lote';
+import { correrLoteEBR, type EventoLote, type ResumenLote } from '@/lib/ebr-lote';
 import { evaluarYGuardarEBR } from '@/lib/ebr-runner';
+import {
+  partirCartera,
+  type AlcanceMasivo,
+  type ConExcluidos,
+  type FilaCartera,
+} from '@/lib/cartera';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 /** 36 clientes en secuencia. Súbelo si la cartera crece. */
 export const maxDuration = 300;
 
-type Alcance = 'todos' | 'vigentes' | 'seleccion';
+/** El evento del orquestador, con el resumen completado por esta ruta. */
+type EventoMasivo =
+  | Exclude<EventoLote, { tipo: 'resumen' }>
+  | { tipo: 'resumen'; lote_id: string; resumen: ResumenLote & ConExcluidos };
 
 type Body = {
   confirmacion?: string;
-  alcance?: Alcance;
+  alcance?: AlcanceMasivo;
   codigos?: string[];
 };
 
@@ -57,8 +66,9 @@ export async function POST(req: NextRequest) {
   }
 
   // --- Selección de la cartera ------------------------------------------
-  const alcance: Alcance = body.alcance ?? 'todos';
+  const alcance: AlcanceMasivo = body.alcance ?? 'todos';
   let codigos: string[];
+  let excluidos_baja: string[] = [];
 
   if (alcance === 'seleccion') {
     codigos = (body.codigos ?? []).filter(
@@ -73,14 +83,15 @@ export async function POST(req: NextRequest) {
   } else {
     // Por defecto, TODOS. Un inactivo con grado ALTO viejo sigue siendo un
     // expediente tuyo; el mismo criterio que aplicaste al cotejo de listas.
-    let q = supabase.from('clientes').select('codigo_cliente');
+    // Las BAJAS no: cuenta cerrada, se excluyen y el resumen las lista.
+    let q = supabase.from('clientes').select('codigo_cliente, status');
     if (alcance === 'vigentes') q = q.eq('status', 'vigente');
 
     const { data, error } = await q.order('codigo_cliente');
     if (error) {
       return Response.json({ error: error.message }, { status: 500 });
     }
-    codigos = (data ?? []).map((r) => r.codigo_cliente as string);
+    ({ codigos, excluidos_baja } = partirCartera((data ?? []) as FilaCartera[]));
   }
 
   if (codigos.length === 0) {
@@ -92,7 +103,7 @@ export async function POST(req: NextRequest) {
   const usuario = user.email ?? user.id;
 
   const encoder = new TextEncoder();
-  const linea = (e: EventoLote) => encoder.encode(JSON.stringify(e) + '\n');
+  const linea = (e: EventoMasivo) => encoder.encode(JSON.stringify(e) + '\n');
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -104,7 +115,14 @@ export async function POST(req: NextRequest) {
         );
 
         for await (const evento of iterador) {
-          controller.enqueue(linea(evento));
+          // El orquestador [core] no sabe de bajas; el resumen se completa aquí.
+          controller.enqueue(
+            linea(
+              evento.tipo === 'resumen'
+                ? { ...evento, resumen: { ...evento.resumen, excluidos_baja } }
+                : evento,
+            ),
+          );
         }
       } catch (e) {
         // Fallo del lote completo (conexión caída), no de un cliente.
