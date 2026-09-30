@@ -116,6 +116,11 @@ export default function EditarCliente() {
               ))}
             </select>
           )}
+          {!esBaja(statusActual) && (
+            <Link href={`/cliente/${codigo}/baja`} className="text-xs text-red-700 hover:underline self-start">
+              Dar de baja →
+            </Link>
+          )}
         </div>
         <button
           onClick={guardar}

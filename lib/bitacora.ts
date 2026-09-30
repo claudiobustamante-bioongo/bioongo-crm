@@ -34,7 +34,9 @@ export type AccionBitacora =
   | 'ajuste_perfil_asesor'
   | 'evaluacion_ebr'
   | 'carga_lista_control'
-  | 'resolucion_coincidencia_lista';
+  | 'resolucion_coincidencia_lista'
+  /** Cliente dado de baja. Misma acción que usó la migración del 30-sep-2026. */
+  | 'baja';
 
 export interface EventoBitacora {
   /** Tabla afectada. Debe coincidir con la que usan los triggers. */
