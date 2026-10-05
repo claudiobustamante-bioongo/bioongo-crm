@@ -19,6 +19,9 @@ import { calcularYGuardarIPS, type CodigoErrorIPS } from '@/lib/ips-runner';
 
 const ESTATUS: Record<CodigoErrorIPS, number> = {
   no_existe: 404,
+  // 423 Locked: el recurso existe y la petición es válida, pero está bloqueado
+  // por una coincidencia confirmada en lista de sanciones. No se escribe nada.
+  cliente_bloqueado: 423,
   sin_cuestionario: 404,
   // Ver el PENDIENTE «ErrorIPS tipado» en lib/ips-runner.ts: hoy todo fallo del
   // motor llega aquí como datos bloqueantes, y por eso sale como 400.

@@ -52,15 +52,25 @@ const PERFIL: Fila = {
   horizonte: 'Entre 5 y 10 años',
 };
 
+/** Lo que el doble escribió, para afirmar que un bloqueado no toca nada. */
+const escrituras: string[] = [];
+
+interface OpcionesFake {
+  /** Bloqueo abierto que devuelve `cliente_bloqueos` (null = no hay). */
+  bloqueo?: Fila | null;
+  errorBloqueo?: boolean;
+}
+
 /** Supabase simulado: devuelve las filas dadas y falla el UPDATE si se le pide. */
-function fakeSupabase(perfil: Fila, fallarUpdate = false) {
+function fakeSupabase(perfil: Fila, fallarUpdate = false, opciones: OpcionesFake = {}) {
   interface Cadena {
     select: () => Cadena;
     eq: () => Cadena;
+    is: () => Cadena;
     order: () => Cadena;
     limit: () => Cadena;
     update: (v: Fila) => Cadena;
-    maybeSingle: () => Promise<{ data: Fila | null; error: null }>;
+    maybeSingle: () => Promise<{ data: Fila | null; error: unknown }>;
     then: (r: (v: { error: unknown }) => unknown) => Promise<unknown>;
   }
   const cadena = (tabla: string): Cadena => {
@@ -68,13 +78,22 @@ function fakeSupabase(perfil: Fila, fallarUpdate = false) {
     const q: Cadena = {
       select: () => q,
       eq: () => q,
+      is: () => q,
       order: () => q,
       limit: () => q,
       update: () => {
         esUpdate = true;
+        escrituras.push(tabla);
         return q;
       },
-      maybeSingle: async () => ({ data: tabla === 'clientes' ? CLIENTE : perfil, error: null }),
+      maybeSingle: async () => {
+        if (tabla === 'cliente_bloqueos') {
+          return opciones.errorBloqueo
+            ? { data: null, error: { message: 'fallo simulado' } }
+            : { data: opciones.bloqueo ?? null, error: null };
+        }
+        return { data: tabla === 'clientes' ? CLIENTE : perfil, error: null };
+      },
       then: (r) =>
         Promise.resolve(
           esUpdate && fallarUpdate ? { error: { message: 'fallo simulado' } } : { error: null },
@@ -85,9 +104,9 @@ function fakeSupabase(perfil: Fila, fallarUpdate = false) {
   return { from: (t: string) => cadena(t) } as unknown as SupabaseClient;
 }
 
-const correr = (perfil: Fila, fallarUpdate = false) =>
+const correr = (perfil: Fila, fallarUpdate = false, opciones: OpcionesFake = {}) =>
   calcularYGuardarIPS('PRUEBA-001', {
-    supabase: fakeSupabase(perfil, fallarUpdate),
+    supabase: fakeSupabase(perfil, fallarUpdate, opciones),
     usuario: 'asesor@prueba.test',
   });
 
@@ -127,4 +146,42 @@ test('el perfil anterior viaja como grado_anterior para la lista de cambios', as
   assert.equal(r.evaluacion_id, 'perfil-1');
   // El IPS no tiene evaluación preliminar: esta lista está vacía a propósito.
   assert.deepEqual(r.campos_faltantes, []);
+});
+
+// ---------------------------------------------------------------------------
+// Cliente bloqueado (decisión del 29-sep-2026): no se recalcula ni se escribe
+// ---------------------------------------------------------------------------
+
+test('cliente bloqueado: cliente_bloqueado, sin escribir; el perfil vigente queda intacto', async () => {
+  escrituras.length = 0;
+  const r = await correr(PERFIL, false, {
+    bloqueo: {
+      id: 'bloqueo-1',
+      codigo_cliente: 'PRUEBA-001',
+      motivo: 'Coincidencia confirmada en lista OFAC.',
+      bloqueado_en: '2026-10-05T16:30:00Z',
+      bloqueado_por: 'oficial@prueba.test',
+      coincidencia_id: 'c-1',
+    },
+  });
+  assert.equal(r.ok, false);
+  assert.equal(r.codigo_error, 'cliente_bloqueado');
+  assert.match(r.error ?? '', /BLOQUEADO desde 2026-10-05 10:30/);
+  assert.deepEqual(escrituras, [], 'un bloqueado no toca perfil_riesgo');
+  assert.equal(r.payload, undefined, 'ni siquiera se calcula');
+});
+
+test('si no se puede leer el bloqueo: lectura, y tampoco escribe', async () => {
+  escrituras.length = 0;
+  const r = await correr(PERFIL, false, { errorBloqueo: true });
+  assert.equal(r.ok, false);
+  assert.equal(r.codigo_error, 'lectura');
+  assert.deepEqual(escrituras, []);
+});
+
+test('sin bloqueo el cálculo sigue igual', async () => {
+  escrituras.length = 0;
+  const r = await correr(PERFIL);
+  assert.equal(r.ok, true);
+  assert.deepEqual(escrituras, ['perfil_riesgo']);
 });

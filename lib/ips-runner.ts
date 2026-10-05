@@ -9,6 +9,13 @@
  * Contrato con el orquestador: NUNCA lanza por un problema del expediente.
  * Devuelve { ok: false, codigo_error, error } y deja que el lote continúe.
  *
+ * CLIENTE BLOQUEADO · decisión de Claudio, 29-sep-2026, vigente desde el 5-oct.
+ * Si el cliente tiene un bloqueo abierto en `cliente_bloqueos` (coincidencia
+ * confirmada en lista de sanciones), devuelve `cliente_bloqueado` y NO escribe:
+ * el perfil vigente queda intacto. Un error al leer el bloqueo es `lectura` y
+ * tampoco escribe: no se opera con un cliente cuyo bloqueo no se pudo verificar.
+ * El EBR, en cambio, sí corre para un bloqueado (sale ALTO con alerta crítica).
+ *
  * ---------------------------------------------------------------------------
  * PENDIENTE · «ErrorIPS tipado» — va en su propio día
  *
@@ -47,11 +54,13 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { calcularPerfilIPS, type IPSInputs } from '@/lib/ips-engine';
 import type { PerfilRiesgo } from '@/lib/ips-catalogo';
 import { registrarEvento } from '@/lib/bitacora';
+import { leerBloqueoAbierto, mensajeClienteBloqueado } from '@/lib/bloqueo';
 import type { ResultadoLote, ResumenLote } from '@/lib/ebr-lote';
 import type { ConExcluidos } from '@/lib/cartera';
 
 export type CodigoErrorIPS =
   | 'no_existe'
+  | 'cliente_bloqueado'
   | 'sin_cuestionario'
   | 'datos_bloqueantes'
   | 'lectura'
@@ -172,6 +181,14 @@ export async function calcularYGuardarIPS(
 
     if (errorCliente) return fallo(codigo_cliente, 'lectura', 'Error al leer el cliente.');
     if (!cliente) return fallo(codigo_cliente, 'no_existe', 'El cliente no existe.');
+
+    // Antes de leer el perfil y mucho antes de escribir: un bloqueado no se
+    // recalcula. Ver la cabecera.
+    const { bloqueo, error: errorBloqueo } = await leerBloqueoAbierto(supabase, codigo_cliente);
+    if (errorBloqueo)
+      return fallo(codigo_cliente, 'lectura', 'Error al verificar si el cliente está bloqueado.');
+    if (bloqueo)
+      return fallo(codigo_cliente, 'cliente_bloqueado', mensajeClienteBloqueado(bloqueo));
 
     // `perfil_riesgo` tiene restricción única en `codigo_cliente`
     // (`perfil_riesgo_codigo_cliente_key`): hay como máximo una fila por

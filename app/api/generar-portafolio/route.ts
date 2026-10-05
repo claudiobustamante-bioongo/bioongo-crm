@@ -9,6 +9,7 @@ import {
   type Universo,
 } from '@/lib/ips-portafolios';
 import { registrarEvento } from '@/lib/bitacora';
+import { leerBloqueoAbierto, mensajeClienteBloqueado } from '@/lib/bloqueo';
 
 /**
  * POST /api/generar-portafolio
@@ -49,6 +50,10 @@ import { registrarEvento } from '@/lib/bitacora';
  *
  * Pedir "SIC" sobre el universo EEUU no es un error de datos faltantes sino una
  * combinación conceptualmente inválida, y se rechaza como tal.
+ *
+ * CLIENTE BLOQUEADO (decisión de Claudio, 29-sep-2026): con un bloqueo abierto
+ * en `cliente_bloqueos` responde 423 y no construye ni guarda nada. Si el
+ * bloqueo no se puede leer, 500: no se genera para quien no se pudo verificar.
  *
  * Ningún dato del cliente se escribe a logs: solo mensajes genéricos.
  */
@@ -203,6 +208,23 @@ export async function POST(request: Request) {
   }
   if (!cliente) {
     return Response.json({ error: 'El cliente no existe.' }, { status: 404 });
+  }
+
+  // --- 2b. Bloqueo ------------------------------------------------------------
+
+  const { bloqueo, error: errorBloqueo } = await leerBloqueoAbierto(supabase, codigoCliente);
+  if (errorBloqueo) {
+    console.error('generar-portafolio: fallo al leer cliente_bloqueos.');
+    return Response.json(
+      { error: 'No se pudo verificar si el cliente está bloqueado. No se generó el portafolio.' },
+      { status: 500 }
+    );
+  }
+  if (bloqueo) {
+    return Response.json(
+      { error: mensajeClienteBloqueado(bloqueo), codigo_error: 'cliente_bloqueado' },
+      { status: 423 }
+    );
   }
 
   // --- 3. Perfil más reciente -----------------------------------------------

@@ -35,6 +35,7 @@ type Fila = Record<string, unknown>;
 interface Cadena {
   select: () => Cadena;
   eq: (columna?: string, valor?: unknown) => Cadena;
+  is: () => Cadena;
   order: () => Cadena;
   limit: () => Cadena;
   update: (valores: Fila) => Cadena;
@@ -50,6 +51,8 @@ const registro = vi.hoisted(() => ({
   errorCliente: false,
   errorPerfil: false,
   errorUpdate: false,
+  /** Bloqueo abierto en cliente_bloqueos (null = no hay). */
+  bloqueo: null as Record<string, unknown> | null,
   tablas: [] as string[],
   updates: [] as { tabla: string; valores: Record<string, unknown>; filtro: { columna?: string; valor?: unknown } | null }[],
   eventos: [] as EventoBitacora[],
@@ -67,6 +70,7 @@ vi.mock('@/lib/supabase-server', () => {
         if (entrada) entrada.filtro = { columna, valor };
         return q;
       },
+      is: () => q,
       order: () => q,
       limit: () => q,
       update: (valores: Record<string, unknown>) => {
@@ -75,6 +79,7 @@ vi.mock('@/lib/supabase-server', () => {
         return q;
       },
       maybeSingle: async () => {
+        if (tabla === 'cliente_bloqueos') return { data: registro.bloqueo, error: null };
         if (tabla === 'clientes') {
           if (registro.errorCliente) return { data: null, error: { message: 'fallo simulado' } };
           return { data: registro.cliente, error: null };
@@ -207,6 +212,7 @@ beforeEach(() => {
   registro.errorCliente = false;
   registro.errorPerfil = false;
   registro.errorUpdate = false;
+  registro.bloqueo = null;
   registro.tablas = [];
   registro.updates = [];
   registro.eventos = [];
@@ -292,9 +298,26 @@ test('éxito: un asiento de bitácora, después del guardado, con la transición
   assert.match(evento.motivo, /Cálculo del perfil IPS con el motor/);
 });
 
-test('éxito: solo lee clientes y perfil_riesgo; no toca ninguna otra tabla', async () => {
+test('éxito: solo lee clientes, cliente_bloqueos y perfil_riesgo; no toca ninguna otra tabla', async () => {
   await calcular();
-  assert.deepEqual([...new Set(registro.tablas)].sort(), ['clientes', 'perfil_riesgo']);
+  assert.deepEqual([...new Set(registro.tablas)].sort(), ['cliente_bloqueos', 'clientes', 'perfil_riesgo']);
+});
+
+test('cliente bloqueado: 423 con su mensaje, CERO escrituras y sin bitácora', async () => {
+  registro.bloqueo = {
+    id: 'bloqueo-1',
+    codigo_cliente: 'PRUEBA-001',
+    motivo: 'Coincidencia confirmada en lista OFAC.',
+    bloqueado_en: '2026-10-05T16:30:00Z',
+    bloqueado_por: 'oficial@prueba.test',
+    coincidencia_id: 'c-1',
+  };
+  const { status, cuerpo } = await calcular();
+  assert.equal(status, 423);
+  assert.match(String(cuerpo.error), /BLOQUEADO/);
+  assert.equal(registro.updates.length, 0);
+  assert.equal(registro.eventos.length, 0);
+  assert.equal(registro.tablas.includes('perfil_riesgo'), false, 'ni siquiera lee el perfil');
 });
 
 test('jubilada con nulos y la contradicción de ahorros: 200, no revienta', async () => {
