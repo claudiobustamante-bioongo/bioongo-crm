@@ -5,10 +5,21 @@
  *   1. LPB, OFAC y ONU disparan la ruta reforzada: son listas de sanciones.
  *   2. El SAT 69-B no la dispara: es materia fiscal.
  *   3. El sistema nunca presenta el reporte por su cuenta: la ruta no llama a
- *      la red ni escribe fuera de la coincidencia y la bitácora.
+ *      la red ni escribe por otra vía que la función de firma y la bitácora.
+ *
+ * Y las del 5 de octubre de 2026 (bloqueo y firma):
+ *   4. Sin firma (rol y declaración) no se resuelve en ningún sentido: 400 y
+ *      no se toca nada.
+ *   5. La escritura es UNA llamada a fn_resolver_coincidencia; la ruta no hace
+ *      UPDATE ni INSERT por su cuenta.
+ *   6. El firmante sale de la sesión (lo pone la base); la ruta nunca lo manda,
+ *      y en su fuente no hay correo ni firmante constante.
+ *   7. Los errores BL4xx de la función salen como su 4xx, nunca como 500.
  *
  * Supabase y la bitácora se sustituyen: lo que se prueba es la decisión de la
- * ruta, no la base.
+ * ruta, no la base. Lo que hace la función por dentro (todo o nada, un bloqueo
+ * abierto por cliente) se probó contra Postgres en la réplica PGlite y en
+ * producción con rollback: ver migraciones/2026-10-05-bloqueo-y-firma.sql.
  *
  * Se corre con vitest:
  *   npm test
@@ -16,6 +27,7 @@
 
 import { afterEach, beforeEach, test, vi, type MockInstance } from 'vitest';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import type { EventoBitacora } from '@/lib/bitacora';
 
@@ -26,6 +38,11 @@ const registro = vi.hoisted(() => ({
   tipoLista: 'OFAC',
   tablas: [] as string[],
   updates: [] as { tabla: string; valores: Record<string, unknown> }[],
+  rpcs: [] as { fn: string; args: Record<string, unknown> }[],
+  /** Error que devuelve la función, o null. */
+  errorRpc: null as { code: string; message: string } | null,
+  /** El cliente ya tenía un bloqueo abierto por otra coincidencia. */
+  bloqueoPrevio: false,
   eventos: [] as EventoBitacora[],
 }));
 
@@ -77,6 +94,30 @@ vi.mock('@/lib/supabase-server', () => {
     return q;
   }
 
+  /**
+   * Imita lo que la función decide: bloquea si confirma en sanciones (el doble
+   * usa la misma lista que la base, LPB/OFAC/ONU) y firma con el usuario del
+   * JWT, que aquí es el de la sesión.
+   */
+  async function rpc(fn: string, args: Record<string, unknown>) {
+    registro.rpcs.push({ fn, args });
+    if (registro.errorRpc) return { data: null, error: registro.errorRpc };
+    const bloquea = args.p_estado === 'confirmada' && ['LPB', 'OFAC', 'ONU'].includes(registro.tipoLista);
+    return {
+      data: {
+        coincidencia_id: args.p_coincidencia_id,
+        codigo_cliente: COINCIDENCIA.codigo_cliente,
+        estado: args.p_estado,
+        tipo_lista: registro.tipoLista,
+        revisada_por: 'revisor@prueba.test',
+        firma_id: 'firma-1',
+        bloqueo_id: bloquea ? 'bloqueo-1' : null,
+        bloqueo_nuevo: bloquea && !registro.bloqueoPrevio,
+      },
+      error: null,
+    };
+  }
+
   return {
     createClient: async () => ({
       auth: {
@@ -86,6 +127,7 @@ vi.mock('@/lib/supabase-server', () => {
         registro.tablas.push(tabla);
         return consulta(tabla);
       },
+      rpc,
     }),
   };
 });
@@ -104,6 +146,9 @@ let fetchEspia: MockInstance<typeof fetch>;
 beforeEach(() => {
   registro.tablas = [];
   registro.updates = [];
+  registro.rpcs = [];
+  registro.errorRpc = null;
+  registro.bloqueoPrevio = false;
   registro.eventos = [];
   // Si la ruta intentara presentar algo, lo haría por la red.
   fetchEspia = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
@@ -115,25 +160,38 @@ afterEach(() => {
   fetchEspia.mockRestore();
 });
 
-async function resolver(tipoLista: string, estado: 'confirmada' | 'descartada') {
-  registro.tipoLista = tipoLista;
+const FIRMA = { rol: 'oficial_cumplimiento', declaracion: 'Revisé el careo y asumo la decisión.' };
+
+type Cuerpo = Fila & {
+  advertencia?: { titulo: string; obligaciones: string[]; fundamento: string };
+  pendiente?: string;
+  error?: string;
+  bloqueo?: { id: string; nuevo: boolean } | null;
+  firma?: { id: string; rol: string; firmante: string };
+};
+
+async function pedir(body: Record<string, unknown>) {
   const res = await POST(
     new Request('http://localhost/api/resolver-coincidencia', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        id: 'coinc-1',
-        estado,
-        motivo: 'Mismo RFC y misma CURP que el expediente.',
-      }),
+      body: JSON.stringify(body),
     })
   );
-  const cuerpo = (await res.json()) as Fila & {
-    advertencia?: { titulo: string; obligaciones: string[]; fundamento: string };
-    pendiente?: string;
-  };
+  return { status: res.status, cuerpo: (await res.json()) as Cuerpo };
+}
+
+async function resolver(tipoLista: string, estado: 'confirmada' | 'descartada', extra: Fila = {}) {
+  registro.tipoLista = tipoLista;
+  const { status, cuerpo } = await pedir({
+    id: 'coinc-1',
+    estado,
+    motivo: 'Mismo RFC y misma CURP que el expediente.',
+    ...FIRMA,
+    ...extra,
+  });
   assert.equal(registro.eventos.length, 1, 'un asiento por resolución');
-  return { status: res.status, cuerpo, evento: registro.eventos[0] };
+  return { status, cuerpo, evento: registro.eventos[0] };
 }
 
 // ---------------------------------------------------------------------------
@@ -204,13 +262,14 @@ test('OFAC DESCARTADA: un homónimo no dispara nada', async () => {
 // 3 · El sistema nunca presenta el reporte solo
 // ---------------------------------------------------------------------------
 
-test('nunca presenta el reporte: ni red, ni escrituras fuera de la coincidencia', async () => {
+test('nunca presenta el reporte: ni red, ni escrituras fuera de la función de firma', async () => {
   // Quién presenta y cuándo lo deciden Claudio Bustamante y el Oficial de
   // Cumplimiento. Si alguien agrega aquí una llamada a SITI, un correo o una
   // escritura a otra tabla, este caso falla.
   for (const tipo of ['LPB', 'OFAC', 'ONU']) {
     registro.tablas = [];
     registro.updates = [];
+    registro.rpcs = [];
     registro.eventos = [];
 
     const { cuerpo } = await resolver(tipo, 'confirmada');
@@ -218,15 +277,19 @@ test('nunca presenta el reporte: ni red, ni escrituras fuera de la coincidencia'
 
     assert.equal(fetchEspia.mock.calls.length, 0, `${tipo}: la ruta llamó a la red`);
 
-    // Solo lee la coincidencia y su lista, y solo escribe la coincidencia.
+    // Solo lee la coincidencia y su lista. No escribe por su cuenta: toda la
+    // escritura es UNA llamada a la función de firma, con estos parámetros y
+    // ninguno más.
     assert.deepEqual([...new Set(registro.tablas)].sort(), ['listas_coincidencias', 'listas_control']);
-    assert.equal(registro.updates.length, 1);
-    assert.equal(registro.updates[0].tabla, 'listas_coincidencias');
-    assert.deepEqual(Object.keys(registro.updates[0].valores).sort(), [
-      'estado',
-      'fecha_revision',
-      'motivo_resolucion',
-      'revisada_por',
+    assert.equal(registro.updates.length, 0, `${tipo}: la ruta escribió por fuera de la función`);
+    assert.equal(registro.rpcs.length, 1);
+    assert.equal(registro.rpcs[0].fn, 'fn_resolver_coincidencia');
+    assert.deepEqual(Object.keys(registro.rpcs[0].args).sort(), [
+      'p_coincidencia_id',
+      'p_declaracion',
+      'p_estado',
+      'p_motivo',
+      'p_rol',
     ]);
   }
 });
@@ -243,4 +306,108 @@ test('el aviso ya no dice que la EBR ignora las coincidencias: es falso desde a7
   assert.match(cuerpo.pendiente, /PRUEBA-001/);
   assert.match(cuerpo.pendiente, /próxima evaluación/);
   assert.match(cuerpo.pendiente, /ALTO/);
+});
+
+// ---------------------------------------------------------------------------
+// 4 · Sin firma no se resuelve, en ningún sentido (5-oct-2026)
+// ---------------------------------------------------------------------------
+
+for (const estado of ['confirmada', 'descartada'] as const) {
+  for (const [caso, firma] of [
+    ['sin rol', { declaracion: 'Declaro.' }],
+    ['rol inventado', { rol: 'director', declaracion: 'Declaro.' }],
+    ['sin declaración', { rol: 'asesor' }],
+    ['declaración en blanco', { rol: 'asesor', declaracion: '   ' }],
+  ] as const) {
+    test(`${estado} ${caso}: 400 y no toca nada`, async () => {
+      registro.tipoLista = 'OFAC';
+      const { status, cuerpo } = await pedir({ id: 'coinc-1', estado, motivo: 'Homónimo.', ...firma });
+      assert.equal(status, 400);
+      assert.match(cuerpo.error ?? '', /firma/i);
+      assert.equal(registro.tablas.length, 0, 'ni siquiera lee');
+      assert.equal(registro.rpcs.length, 0);
+      assert.equal(registro.eventos.length, 0);
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 5 · Bloqueo: lo decide la función y la ruta lo reporta
+// ---------------------------------------------------------------------------
+
+test('OFAC confirmada: responde el bloqueo nuevo y la bitácora lo dice', async () => {
+  const { cuerpo, evento } = await resolver('OFAC', 'confirmada');
+  assert.deepEqual(cuerpo.bloqueo, { id: 'bloqueo-1', nuevo: true });
+  assert.match(evento.motivo, /Cliente BLOQUEADO/);
+  assert.match(cuerpo.pendiente ?? '', /BLOQUEADO/);
+  assert.deepEqual(evento.metadata?.bloqueo, { id: 'bloqueo-1', nuevo: true });
+});
+
+test('OFAC confirmada con un bloqueo ya abierto: no abre otro y lo dice, sin error', async () => {
+  registro.bloqueoPrevio = true;
+  const { status, cuerpo, evento } = await resolver('OFAC', 'confirmada');
+  assert.equal(status, 200);
+  assert.deepEqual(cuerpo.bloqueo, { id: 'bloqueo-1', nuevo: false });
+  assert.match(evento.motivo, /ya estaba bloqueado/);
+});
+
+for (const tipo of ['SAT_69B', 'PEP_NACIONAL']) {
+  test(`${tipo} confirmada: firma sí, bloqueo no`, async () => {
+    const { cuerpo } = await resolver(tipo, 'confirmada');
+    assert.equal(cuerpo.bloqueo, null);
+    assert.equal(cuerpo.firma?.id, 'firma-1');
+  });
+}
+
+test('descartar también se firma: el descarte llega a la función con rol y declaración', async () => {
+  const { cuerpo } = await resolver('OFAC', 'descartada');
+  assert.equal(cuerpo.bloqueo, null);
+  assert.equal(registro.rpcs[0].args.p_estado, 'descartada');
+  assert.equal(registro.rpcs[0].args.p_rol, 'oficial_cumplimiento');
+  assert.equal(registro.rpcs[0].args.p_declaracion, FIRMA.declaracion);
+});
+
+// ---------------------------------------------------------------------------
+// 6 · El firmante es el de la sesión, nunca una constante
+// ---------------------------------------------------------------------------
+
+test('un firmante en el cuerpo no llega a la función; la firma lleva el de la sesión', async () => {
+  const { cuerpo, evento } = await resolver('OFAC', 'confirmada', { firmante: 'impostor@prueba.test' });
+  const args = registro.rpcs[0].args;
+  assert.equal(JSON.stringify(args).includes('impostor'), false);
+  assert.equal(cuerpo.firma?.firmante, 'revisor@prueba.test');
+  assert.match(evento.motivo, /Firmó revisor@prueba\.test como oficial_cumplimiento/);
+});
+
+test('la fuente de la ruta no trae firmante constante ni correo escrito a mano', () => {
+  const fuente = readFileSync(new URL('./route.ts', import.meta.url), 'utf8');
+  assert.doesNotMatch(fuente, /p_firmante|firmante\s*:\s*['"`]/, 'la ruta no debe mandar ni fijar firmante');
+  assert.doesNotMatch(fuente, /['"`][^'"`\s]+@[^'"`\s]+\.[a-z]{2,}['"`]/i, 'correo literal en la ruta');
+});
+
+// ---------------------------------------------------------------------------
+// 7 · Errores de la función: 4xx, nunca 500
+// ---------------------------------------------------------------------------
+
+for (const [code, status] of [
+  ['BL400', 400],
+  ['BL401', 401],
+  ['BL404', 404],
+  ['BL409', 409],
+] as const) {
+  test(`la función responde ${code}: la ruta da ${status} y no asienta bitácora`, async () => {
+    registro.errorRpc = { code, message: 'mensaje de la base' };
+    registro.tipoLista = 'OFAC';
+    const r = await pedir({ id: 'coinc-1', estado: 'confirmada', motivo: 'x', ...FIRMA });
+    assert.equal(r.status, status);
+    assert.equal(typeof r.cuerpo.error, 'string');
+    assert.equal(registro.eventos.length, 0);
+  });
+}
+
+test('un error ajeno a la firma sí es 500, con mensaje genérico', async () => {
+  registro.errorRpc = { code: '57014', message: 'detalle interno' };
+  const r = await pedir({ id: 'coinc-1', estado: 'confirmada', motivo: 'x', ...FIRMA });
+  assert.equal(r.status, 500);
+  assert.doesNotMatch(r.cuerpo.error ?? '', /detalle interno/);
 });

@@ -2,12 +2,20 @@ import { createClient } from '@/lib/supabase-server';
 import { registrarEvento } from '@/lib/bitacora';
 import { FUNDAMENTOS } from '@/lib/ebr-engine';
 import { OBLIGACIONES_SANCIONES, esListaDeSanciones, nombreLista } from '@/lib/listas';
+import { estatusErrorFirma, validarFirma } from '@/lib/firma';
 
 /**
  * POST /api/resolver-coincidencia
  *
- * Recibe { id, estado, motivo } y resuelve una coincidencia detectada contra
- * una lista de control. `estado` es 'confirmada' o 'descartada'.
+ * Recibe { id, estado, motivo, rol, declaracion } y resuelve una coincidencia
+ * detectada contra una lista de control. `estado` es 'confirmada' o
+ * 'descartada'.
+ *
+ * TODA RESOLUCIÓN SE FIRMA, en los dos sentidos. Descartar es el acto más
+ * riesgoso —un falso negativo deja operar a quien no debía—, así que pesa lo
+ * mismo que confirmar: sin `rol` y `declaracion` responde 400 y no toca nada.
+ * El firmante NO se recibe: lo toma la base del JWT de la sesión. El rol se
+ * DECLARA y no se verifica hasta la Fase G (ver lib/firma.ts).
  *
  * EL MOTIVO ES OBLIGATORIO EN AMBOS SENTIDOS. Descartar una coincidencia
  * contra la Lista de Personas Bloqueadas por homonimia es una decisión
@@ -19,40 +27,35 @@ import { OBLIGACIONES_SANCIONES, esListaDeSanciones, nombreLista } from '@/lib/l
  * cuándo. Permitir que un segundo UPDATE pise al primero borraría de la
  * evidencia quién decidió qué, que es justo lo que hay que poder mostrar.
  *
+ * TODO O NADA, EN LA BASE
+ *
+ * La escritura es UNA llamada a fn_resolver_coincidencia (SECURITY DEFINER,
+ * migraciones/2026-10-05-bloqueo-y-firma.sql): cambia la coincidencia, escribe
+ * la firma y, si la lista es de sanciones, abre el bloqueo del cliente, en la
+ * misma transacción. Las tablas de firma y bloqueo no admiten escritura
+ * directa de la aplicación. Si el cliente ya tenía un bloqueo abierto por otra
+ * coincidencia, la función devuelve ese y no abre otro.
+ *
+ * Los errores propios de la función (BL400, BL401, BL404, BL409) se traducen a
+ * su 4xx; nunca salen como 500.
+ *
  * QUÉ DISPARA LA RUTA REFORZADA
  *
  * Confirmar una coincidencia en una lista de SANCIONES —LPB, OFAC u ONU, según
- * `TIPOS_SANCIONES` de `lib/listas.ts`— devuelve el aviso con las obligaciones
- * del apartado 10.10 y las asienta en la bitácora. Es la misma regla con la que
- * el motor EBR eleva a ALTO con alerta crítica. Hasta el 11 de septiembre de
- * 2026 esta ruta solo reaccionaba a la LPB, y con OFAC como lista operativa el
- * sistema se contradecía: el motor alarmaba y aquí no pasaba nada. El SAT 69-B
- * no la dispara: es materia fiscal.
+ * `TIPOS_SANCIONES` de `lib/listas.ts`, que un test ata a fn_tipos_sanciones()
+ * de la base— BLOQUEA al cliente, devuelve el aviso con las obligaciones del
+ * apartado 10.10 y las asienta en la bitácora. Es la misma regla con la que el
+ * motor EBR eleva a ALTO con alerta crítica. El SAT 69-B no la dispara: es
+ * materia fiscal. PEP_NACIONAL tampoco.
  *
- * LO QUE ESTA RUTA NO HACE — NI PARA LA LPB, NI ANTES NI AHORA
+ * Desde el 5 de octubre de 2026 el bloqueo persiste: la bandeja y la ficha lo
+ * leen de `cliente_bloqueos`, el IPS y el portafolio se niegan a generarse
+ * mientras esté abierto, y solo se levanta con firma (/api/levantar-bloqueo).
  *
- * No bloquea al cliente y no exige firma. Al confirmar una coincidencia en una
- * lista de sanciones hace tres cosas, y ninguna obliga a nada: cambia el estado
- * de la coincidencia, escribe las obligaciones como texto dentro de un asiento
- * de bitácora que ningún proceso lee, y devuelve un aviso que la bandeja pinta
- * en un recuadro que se pierde al recargar la página.
- *
- * Eso vale también para la LPB. Extender el aviso a OFAC y ONU no restauró
- * ninguna paridad: el bloqueo y la firma nunca existieron, para ninguna lista.
- *
- * PENDIENTE · 23 de septiembre de 2026 · requiere DDL
- *   1. Bloqueo del cliente: una marca persistente que impida operar con él
- *      desde que se confirma la coincidencia hasta que se levante con firma.
- *   2. Registro de firma: la validación del Oficial de Cumplimiento sobre la
- *      confirmación, con quién firmó y cuándo.
- * Mientras no existan, suspender operaciones depende de que alguien lea el
- * aviso y actúe.
- *
- * EL SISTEMA NUNCA PRESENTA EL REPORTE DE 24 HORAS, ni ahora ni cuando existan
- * el bloqueo y la firma: marca, bloquea y exige firma. Quién presenta y cuándo
- * lo deciden Claudio Bustamante y el Oficial de Cumplimiento. Hay un test
- * (route.test.ts) que falla si esta ruta llama a la red o escribe fuera de la
- * coincidencia y la bitácora.
+ * EL SISTEMA NUNCA PRESENTA EL REPORTE DE 24 HORAS: marca, bloquea y exige
+ * firma. Quién presenta y cuándo lo deciden Claudio Bustamante y el Oficial de
+ * Cumplimiento. Hay un test (route.test.ts) que falla si esta ruta llama a la
+ * red o escribe por otra vía que la función de firma y la bitácora.
  *
  * Ningún dato del cliente se escribe a logs: solo mensajes genéricos.
  */
@@ -76,7 +79,8 @@ function avisoTrasConfirmar(tipo: string, codigoCliente: string): string {
     return (
       base +
       'Al reevaluarlo quedará en riesgo ALTO, con alerta crítica, por coincidencia ' +
-      'confirmada en listas de sanciones.'
+      'confirmada en listas de sanciones. El cliente ya quedó BLOQUEADO: el IPS y el ' +
+      'portafolio no se generan hasta que el bloqueo se levante con firma.'
     );
   }
   if (tipo === 'PEP_NACIONAL') {
@@ -97,7 +101,7 @@ function avisoTrasConfirmar(tipo: string, codigoCliente: string): string {
 export async function POST(request: Request) {
   // --- 1. Cuerpo -----------------------------------------------------------
 
-  let cuerpo: { id?: unknown; estado?: unknown; motivo?: unknown };
+  let cuerpo: Record<string, unknown>;
   try {
     cuerpo = await request.json();
   } catch {
@@ -132,6 +136,12 @@ export async function POST(request: Request) {
       { status: 400 }
     );
   }
+
+  const validacion = validarFirma(cuerpo);
+  if (!validacion.ok) {
+    return Response.json({ error: validacion.error }, { status: 400 });
+  }
+  const { firma } = validacion;
 
   // --- 2. Sesión -----------------------------------------------------------
 
@@ -198,35 +208,42 @@ export async function POST(request: Request) {
   const confirmada = estado === 'confirmada';
   const disparaRutaReforzada = confirmada && esListaDeSanciones(lista.tipo);
 
-  // --- 5. Resolución -------------------------------------------------------
+  // --- 5. Resolución, firma y bloqueo: una sola transacción -----------------
 
-  const fechaRevision = new Date().toISOString();
+  // Sin `firmante`: la función lo toma del JWT. La carrera entre dos revisores
+  // la cierra la propia función (FOR UPDATE + estado pendiente → BL409).
+  const { data: rpc, error: errorRpc } = await supabase.rpc('fn_resolver_coincidencia', {
+    p_coincidencia_id: id,
+    p_estado: estado,
+    p_motivo: motivo,
+    p_rol: firma.rol,
+    p_declaracion: firma.declaracion,
+  });
 
-  const { data: actualizada, error: errorUpdate } = await supabase
-    .from('listas_coincidencias')
-    .update({
-      estado,
-      revisada_por: usuario,
-      fecha_revision: fechaRevision,
-      motivo_resolucion: motivo,
-    })
-    .eq('id', id)
-    // Cierra la carrera entre dos revisores: si otro resolvió entre la lectura
-    // y esta escritura, el UPDATE no toca nada y se responde 409.
-    .eq('estado', 'pendiente')
-    .select('id, estado, revisada_por, fecha_revision, motivo_resolucion')
-    .maybeSingle();
-
-  if (errorUpdate) {
+  if (errorRpc) {
+    const status = estatusErrorFirma(errorRpc.code);
+    if (status) {
+      return Response.json(
+        {
+          error:
+            status === 409
+              ? 'Otro usuario resolvió esta coincidencia mientras la revisabas. Vuelve a cargarla.'
+              : errorRpc.message,
+        },
+        { status }
+      );
+    }
     console.error('resolver-coincidencia: fallo al guardar la resolución.');
     return Response.json({ error: 'No se pudo guardar la resolución.' }, { status: 500 });
   }
-  if (!actualizada) {
-    return Response.json(
-      { error: 'Otro usuario resolvió esta coincidencia mientras la revisabas. Vuelve a cargarla.' },
-      { status: 409 }
-    );
-  }
+
+  const resultado = (rpc ?? {}) as Record<string, unknown>;
+  const firmaId = typeof resultado.firma_id === 'string' ? resultado.firma_id : null;
+  const revisadaPor = typeof resultado.revisada_por === 'string' ? resultado.revisada_por : usuario;
+  const bloqueo =
+    typeof resultado.bloqueo_id === 'string'
+      ? { id: resultado.bloqueo_id, nuevo: resultado.bloqueo_nuevo === true }
+      : null;
 
   // --- 6. Bitácora ---------------------------------------------------------
 
@@ -239,6 +256,12 @@ export async function POST(request: Request) {
       `Coincidencia ${coincidencia.tipo_match} contra lista ${lista.tipo} ` +
       `(corte ${lista.fecha_lista}, fuente ${lista.fuente}) sobre el cliente ` +
       `${coincidencia.codigo_cliente}: ${estado.toUpperCase()}. Motivo: ${motivo}` +
+      ` · Firmó ${revisadaPor} como ${firma.rol}.` +
+      (bloqueo
+        ? bloqueo.nuevo
+          ? ' · Cliente BLOQUEADO.'
+          : ' · El cliente ya estaba bloqueado por otra coincidencia; no se abrió otro bloqueo.'
+        : '') +
       (disparaRutaReforzada
         ? ` · OBLIGACIONES INMEDIATAS (apartado 10.10): ${OBLIGACIONES_SANCIONES.join(' ')}`
         : ''),
@@ -264,6 +287,8 @@ export async function POST(request: Request) {
       // Se llamó `dispara_obligaciones_lpb` hasta el 11-sep-2026. Se renombró
       // con cero asientos escritos: ninguna consulta tiene que buscar las dos.
       dispara_ruta_reforzada: disparaRutaReforzada,
+      firma: { id: firmaId, rol: firma.rol, declaracion: firma.declaracion },
+      bloqueo,
     },
   });
 
@@ -271,16 +296,17 @@ export async function POST(request: Request) {
 
   return Response.json({
     coincidencia: {
-      id: actualizada.id,
+      id: coincidencia.id,
       codigo_cliente: coincidencia.codigo_cliente,
       tipo_match: coincidencia.tipo_match,
       valor_cliente: coincidencia.valor_cliente,
       valor_lista: coincidencia.valor_lista,
-      estado: actualizada.estado,
-      revisada_por: actualizada.revisada_por,
-      fecha_revision: actualizada.fecha_revision,
-      motivo_resolucion: actualizada.motivo_resolucion,
+      estado,
+      revisada_por: revisadaPor,
+      motivo_resolucion: motivo,
     },
+    firma: { id: firmaId, rol: firma.rol, firmante: revisadaPor },
+    bloqueo,
     lista: {
       id: lista.id,
       tipo: lista.tipo,
