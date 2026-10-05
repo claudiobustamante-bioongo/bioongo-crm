@@ -1,6 +1,7 @@
 import { createClient } from '@/lib/supabase-server';
 import { PERFILES, type PerfilRiesgo } from '@/lib/ips-catalogo';
 import { registrarEvento } from '@/lib/bitacora';
+import { leerBloqueoAbierto, mensajeClienteBloqueado } from '@/lib/bloqueo';
 
 /**
  * POST /api/ajustar-ips
@@ -10,6 +11,10 @@ import { registrarEvento } from '@/lib/bitacora';
  * Coexistencia: `resultado_perfil` (el motor) y `bitacora_calculo` NUNCA se
  * tocan aquí. El ajuste vive en columnas aparte y quien consuma el perfil debe
  * resolver con `coalesce(perfil_ajustado, resultado_perfil)`.
+ *
+ * CLIENTE BLOQUEADO: con un bloqueo abierto en `cliente_bloqueos` responde 423
+ * y no escribe, igual que /api/calcular-ips y /api/generar-portafolio. Un
+ * bloqueo que no se puede leer da 500.
  *
  * Ningún dato del cliente se escribe a logs: solo mensajes genéricos.
  */
@@ -63,6 +68,26 @@ export async function POST(request: Request) {
   } = await supabase.auth.getUser();
   if (!user) {
     return Response.json({ error: 'No autorizado.' }, { status: 401 });
+  }
+
+  // --- Bloqueo ----------------------------------------------------------------
+
+  // Un cliente con bloqueo abierto por sanciones no se toca (decisión de
+  // Claudio, 5-oct-2026): 423 y nada escrito. Si el bloqueo no se puede leer,
+  // 500: nunca se toma como «no bloqueado».
+  const { bloqueo, error: errorBloqueo } = await leerBloqueoAbierto(supabase, codigoCliente);
+  if (errorBloqueo) {
+    console.error('ajustar-ips: fallo al leer cliente_bloqueos.');
+    return Response.json(
+      { error: 'No se pudo verificar si el cliente está bloqueado. No se guardó nada.' },
+      { status: 500 }
+    );
+  }
+  if (bloqueo) {
+    return Response.json(
+      { error: mensajeClienteBloqueado(bloqueo), codigo_error: 'cliente_bloqueado' },
+      { status: 423 }
+    );
   }
 
   // --- Fila objetivo --------------------------------------------------------

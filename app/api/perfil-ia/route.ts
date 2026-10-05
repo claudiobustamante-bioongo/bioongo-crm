@@ -1,5 +1,17 @@
 import { createClient } from '@/lib/supabase-server';
 import Anthropic from '@anthropic-ai/sdk';
+import { leerBloqueoAbierto, mensajeClienteBloqueado } from '@/lib/bloqueo';
+
+/**
+ * POST /api/perfil-ia
+ *
+ * Redacta con IA la narrativa del perfil a partir del cuestionario y la guarda
+ * en `perfil_riesgo.perfil_ia`.
+ *
+ * CLIENTE BLOQUEADO: con un bloqueo abierto en `cliente_bloqueos` responde 423
+ * ANTES de leer el cuestionario y de llamar a la API: no se escribe nada ni se
+ * manda nada fuera. Un bloqueo que no se puede leer da 500.
+ */
 
 export const dynamic = 'force-dynamic';
 
@@ -50,6 +62,26 @@ export async function POST(request: Request) {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) {
     return Response.json({ error: 'No autorizado.' }, { status: 401 });
+  }
+
+  // --- Bloqueo ----------------------------------------------------------------
+
+  // Un cliente con bloqueo abierto por sanciones no se toca (decisión de
+  // Claudio, 5-oct-2026): 423 y nada escrito. Si el bloqueo no se puede leer,
+  // 500: nunca se toma como «no bloqueado».
+  const { bloqueo, error: errorBloqueo } = await leerBloqueoAbierto(supabase, codigoCliente);
+  if (errorBloqueo) {
+    console.error('perfil-ia: fallo al leer cliente_bloqueos.');
+    return Response.json(
+      { error: 'No se pudo verificar si el cliente está bloqueado. No se guardó nada.' },
+      { status: 500 }
+    );
+  }
+  if (bloqueo) {
+    return Response.json(
+      { error: mensajeClienteBloqueado(bloqueo), codigo_error: 'cliente_bloqueado' },
+      { status: 423 }
+    );
   }
 
   const { data: perfil, error: errorLectura } = await supabase
