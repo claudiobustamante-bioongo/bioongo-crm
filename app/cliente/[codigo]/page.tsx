@@ -7,6 +7,9 @@ import EvaluarEBR, { type EBRGuardado } from './EvaluarEBR';
 import type { EntradaBitacora } from '@/lib/ips-engine';
 import type { FactorMatriz, ObservacionEBR, SupuestoEvaluado } from '@/lib/ebr-engine';
 import { evaluarRevisionAnual, formatearFecha } from '@/lib/revision-anual';
+import { SELECT_BLOQUEO_CON_COINCIDENCIA, aBloqueoEnBandeja } from '@/lib/bloqueo';
+import { OBLIGACIONES_SANCIONES, nombreLista } from '@/lib/listas';
+import LevantarBloqueo from './LevantarBloqueo';
 
 /** Los `numeric` de Postgres pueden llegar como texto. */
 function aNumero(valor: unknown): number | null {
@@ -45,6 +48,20 @@ export default async function FichaCliente({
       </main>
     );
   }
+
+  // El bloqueo abierto, si lo hay. Se lee de la base en cada carga: la banda
+  // desaparece solo cuando alguien lo levanta con firma. Un error de lectura
+  // se dice en pantalla y no se pinta como «sin bloqueo».
+  const { data: filaBloqueo, error: errorBloqueo } = await supabase
+    .from('cliente_bloqueos')
+    .select(SELECT_BLOQUEO_CON_COINCIDENCIA)
+    .eq('codigo_cliente', codigo)
+    .is('levantado_en', null)
+    .maybeSingle();
+
+  const bloqueo = filaBloqueo
+    ? aBloqueoEnBandeja(filaBloqueo as unknown as Record<string, unknown>)
+    : null;
 
   // Se ordena igual que /api/calcular-ips para que la página muestre la misma
   // evaluación que el endpoint escribe. DESC pone los NULL primero: se invierte.
@@ -209,6 +226,58 @@ export default async function FichaCliente({
           Editar
         </Link>
       </div>
+
+      {errorBloqueo && (
+        <p className="border border-red-300 bg-red-50 rounded-lg px-4 py-3 text-sm text-red-900 mb-6">
+          No se pudo leer si el cliente tiene un bloqueo abierto. No operes con él hasta poder
+          verificarlo.
+        </p>
+      )}
+
+      {/* --- Banda de bloqueo: de la base, hasta que se levante con firma --- */}
+      {bloqueo && (
+        <section className="border-2 border-red-400 bg-red-50 rounded-lg px-4 py-4 mb-6">
+          <p className="text-base font-semibold text-red-900">
+            Cliente BLOQUEADO
+            {bloqueo.lista_tipo && ` · coincidencia confirmada en ${nombreLista(bloqueo.lista_tipo)}`}
+          </p>
+          <dl className="mt-2 text-sm text-red-900 space-y-1">
+            <div>
+              <dt className="inline font-medium">Desde: </dt>
+              <dd className="inline">
+                {bloqueo.bloqueado_en_cdmx} (CDMX), por {bloqueo.bloqueado_por}
+              </dd>
+            </div>
+            <div>
+              <dt className="inline font-medium">Motivo: </dt>
+              <dd className="inline">{bloqueo.motivo}</dd>
+            </div>
+            {bloqueo.tipo_match && (
+              <div>
+                <dt className="inline font-medium">Coincidencia: </dt>
+                <dd className="inline">
+                  {bloqueo.tipo_match} · expediente «{bloqueo.valor_cliente}» ↔ lista «
+                  {bloqueo.valor_lista}»
+                </dd>
+              </div>
+            )}
+            <div>
+              <dt className="inline font-medium">Reporte de 24 horas: </dt>
+              <dd className="inline">vence el {bloqueo.vence_reporte_cdmx} (CDMX)</dd>
+            </div>
+          </dl>
+          <ul className="list-disc ml-5 mt-2 space-y-1 text-sm text-red-900">
+            {OBLIGACIONES_SANCIONES.map((o) => (
+              <li key={o}>{o}</li>
+            ))}
+          </ul>
+          <p className="text-xs text-red-800 mt-2">
+            Mientras esté abierto no se calcula el IPS ni se genera portafolio; la EBR sí corre.
+            El sistema no presenta el reporte.
+          </p>
+          <LevantarBloqueo bloqueoId={bloqueo.id} />
+        </section>
+      )}
 
       <dl className="border border-slate-200 rounded-lg divide-y divide-slate-100">
         {campos.map(([label, valor]) => (

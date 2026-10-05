@@ -85,7 +85,7 @@ export function fechaHoraCDMX(iso: string): string {
 }
 
 /**
- * Un bloqueo abierto tal como lo pinta la bandeja: con su coincidencia y su
+ * Un bloqueo abierto tal como lo pintan la bandeja y la ficha: con su coincidencia y su
  * lista, y con las fechas ya en hora de CDMX (se formatean en el servidor).
  */
 export interface BloqueoEnBandeja {
