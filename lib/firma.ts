@@ -53,7 +53,7 @@ const textoLimpio = (valor: unknown): string => (typeof valor === 'string' ? val
  * levantamiento la autorización no se acepta: la base la rechazaría por CHECK.
  */
 export function validarFirma(
-  cuerpo: Record<string, unknown> | null | undefined,
+  cuerpo: Partial<Record<'rol' | 'declaracion' | 'autorizacion_oficial', unknown>> | null | undefined,
   { levantamiento = false }: { levantamiento?: boolean } = {},
 ): ResultadoFirma {
   const rol = cuerpo?.rol;

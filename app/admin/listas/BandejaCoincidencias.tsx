@@ -3,15 +3,28 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { esListaDeSanciones, nombreLista } from '@/lib/listas';
+import { OBLIGACIONES_SANCIONES, esListaDeSanciones, nombreLista } from '@/lib/listas';
+import { validarFirma } from '@/lib/firma';
+import type { BloqueoEnBandeja } from '@/lib/bloqueo';
+import CamposFirma, { FIRMA_VACIA, type ValorFirma } from '@/app/_componentes/CamposFirma';
 
 /**
- * Bandeja de coincidencias pendientes.
+ * Bandeja de coincidencias pendientes y clientes bloqueados.
  *
  * Cada renglón trae el careo completo —qué valor del expediente coincidió con
  * qué valor de la lista— porque esa es la decisión: si es la persona o un
  * homónimo. Mandar al revisor a abrir la ficha en otra pestaña para poder
  * juzgar es la manera de que deje de juzgar.
+ *
+ * TODA RESOLUCIÓN SE FIRMA (5-oct-2026): rol y declaración, al confirmar y al
+ * descartar. Ya no hay `window.confirm`: un diálogo que se acepta con Enter no
+ * es una firma. La advertencia de lo que dispara confirmar en una lista de
+ * sanciones va escrita en el propio renglón, antes del botón.
+ *
+ * LOS BLOQUEOS SE LEEN DE LA BASE. El recuadro rojo de clientes bloqueados
+ * viene de `cliente_bloqueos` (lo consulta page.tsx), no del estado de React:
+ * sobrevive a la recarga y lo ve cualquiera que abra la bandeja, hasta que el
+ * bloqueo se levante con firma desde la ficha del cliente.
  */
 
 export interface CoincidenciaPendiente {
@@ -44,13 +57,6 @@ export interface CoincidenciaPendiente {
   } | null;
 }
 
-interface Advertencia {
-  titulo: string;
-  obligaciones: string[];
-  plazo: string;
-  fundamento: string;
-}
-
 /**
  * Situaciones del 69-B que sí pesan en contra, en minúsculas.
  *
@@ -79,24 +85,32 @@ function fechaLegible(iso: string): string {
 
 export default function BandejaCoincidencias({
   pendientes,
+  bloqueos,
   totalPendientes,
   totalResueltas,
   tope,
   error,
+  errorBloqueos,
 }: {
   pendientes: CoincidenciaPendiente[];
+  /** Bloqueos abiertos, leídos de `cliente_bloqueos` por page.tsx. */
+  bloqueos: BloqueoEnBandeja[];
   totalPendientes: number;
   totalResueltas: number;
   tope: number;
   error: string;
+  errorBloqueos: string;
 }) {
   const router = useRouter();
 
   const [motivos, setMotivos] = useState<Record<string, string>>({});
+  const [firmas, setFirmas] = useState<Record<string, ValorFirma>>({});
   const [ocupada, setOcupada] = useState<string | null>(null);
   const [errores, setErrores] = useState<Record<string, string>>({});
-  /** Se guarda por id: la advertencia sobrevive al refresh de la lista. */
-  const [advertencias, setAdvertencias] = useState<Record<string, Advertencia>>({});
+  /**
+   * Qué pasa con la clasificación tras confirmar. Es un aviso de un momento y
+   * vive en React a propósito; lo que tiene que persistir —el bloqueo— no.
+   */
   const [avisos, setAvisos] = useState<Record<string, string>>({});
 
   async function resolver(c: CoincidenciaPendiente, estado: 'confirmada' | 'descartada') {
@@ -113,23 +127,10 @@ export default function BandejaCoincidencias({
       return;
     }
 
-    // Confirmar contra una lista de sanciones —LPB, OFAC u ONU— hace nacer la
-    // suspensión de operaciones y el reporte de 24 horas. No es un clic más de
-    // la bandeja. Es el mismo predicado que usan la ruta y el motor.
-    //
-    // Este diálogo y el recuadro rojo de abajo son TODO lo que hay: ni el
-    // cliente queda bloqueado ni se exige firma. Ver el pendiente del 23 de
-    // septiembre en /api/resolver-coincidencia.
-    if (
-      estado === 'confirmada' &&
-      c.lista &&
-      esListaDeSanciones(c.lista.tipo) &&
-      !window.confirm(
-        `Vas a CONFIRMAR una coincidencia contra una lista de sanciones (${nombreLista(c.lista.tipo)}).\n\n` +
-          'Al confirmarla nacen dos obligaciones inmediatas: suspender operaciones con el ' +
-          'cliente y reportar a la CNBV dentro de las 24 horas.\n\n¿Continuar?'
-      )
-    ) {
+    // La misma validación que hace el servidor; aquí evita el viaje.
+    const firma = validarFirma(firmas[c.id] ?? FIRMA_VACIA);
+    if (!firma.ok) {
+      setErrores((e) => ({ ...e, [c.id]: firma.error }));
       return;
     }
 
@@ -140,7 +141,13 @@ export default function BandejaCoincidencias({
       const res = await fetch('/api/resolver-coincidencia', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: c.id, estado, motivo }),
+        body: JSON.stringify({
+          id: c.id,
+          estado,
+          motivo,
+          rol: firma.firma.rol,
+          declaracion: firma.firma.declaracion,
+        }),
       });
 
       const contentType = res.headers.get('content-type') ?? '';
@@ -156,9 +163,6 @@ export default function BandejaCoincidencias({
         return;
       }
 
-      if (datos.advertencia) {
-        setAdvertencias((a) => ({ ...a, [c.id]: datos.advertencia }));
-      }
       if (datos.pendiente) {
         setAvisos((a) => ({ ...a, [c.id]: datos.pendiente }));
       }
@@ -170,7 +174,6 @@ export default function BandejaCoincidencias({
     }
   }
 
-  const resueltas = Object.keys(advertencias).concat(Object.keys(avisos));
 
   return (
     <section className="mt-8">
@@ -183,37 +186,71 @@ export default function BandejaCoincidencias({
 
       {error && <p className="text-sm text-red-600 mb-3">{error}</p>}
 
-      {/* Las advertencias de listas de sanciones se quedan a la vista aunque el
-          renglón ya haya salido de la bandeja: es lo que el revisor tiene que
-          actuar. Viven solo en el estado de React y se pierden al recargar; la
-          bitácora conserva el texto, pero nada bloquea al cliente. */}
-      {resueltas.map((id) => {
-        const adv = advertencias[id];
-        const aviso = avisos[id];
-        return (
-          <div key={id} className="mb-3">
-            {adv && (
-              <div className="border border-red-300 bg-red-50 rounded-lg px-4 py-3">
-                <p className="text-sm font-semibold text-red-900">{adv.titulo}</p>
-                <ul className="list-disc ml-5 mt-2 space-y-1 text-sm text-red-900">
-                  {adv.obligaciones.map((o, i) => (
-                    <li key={i}>{o}</li>
-                  ))}
-                </ul>
-                <p className="text-sm text-red-900 mt-2">
-                  <strong>Plazo:</strong> {adv.plazo}
+      {/* --- Clientes bloqueados: de la base, no del estado de React -------- */}
+
+      {errorBloqueos && <p className="text-sm text-red-600 mb-3">{errorBloqueos}</p>}
+
+      {bloqueos.length > 0 && (
+        <div className="border border-red-300 bg-red-50 rounded-lg px-4 py-3 mb-4">
+          <p className="text-sm font-semibold text-red-900">
+            {bloqueos.length === 1
+              ? '1 cliente BLOQUEADO por coincidencia confirmada en lista de sanciones'
+              : `${bloqueos.length} clientes BLOQUEADOS por coincidencia confirmada en lista de sanciones`}
+          </p>
+          <p className="text-sm text-red-900 mt-1">Obligaciones inmediatas (apartado 10.10):</p>
+          <ul className="list-disc ml-5 mt-1 space-y-1 text-sm text-red-900">
+            {OBLIGACIONES_SANCIONES.map((o) => (
+              <li key={o}>{o}</li>
+            ))}
+          </ul>
+          <p className="text-xs text-red-800 mt-2">
+            El sistema no presenta el reporte: marca, bloquea y exige firma. Quién presenta y
+            cuándo lo deciden el Oficial de Cumplimiento y la Dirección.
+          </p>
+
+          <ul className="mt-3 space-y-2">
+            {bloqueos.map((b) => (
+              <li key={b.id} className="border border-red-200 bg-white rounded px-3 py-2 text-sm">
+                <Link
+                  href={`/cliente/${b.codigo_cliente}`}
+                  className="font-medium text-slate-900 underline underline-offset-2 hover:text-slate-600"
+                >
+                  {b.codigo_cliente}
+                </Link>
+                {b.lista_tipo && (
+                  <span className="ml-2 inline-block px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-700">
+                    {nombreLista(b.lista_tipo)}
+                  </span>
+                )}
+                <p className="text-slate-700 mt-1">
+                  Bloqueado el {b.bloqueado_en_cdmx} (CDMX) por {b.bloqueado_por}.{' '}
+                  <strong className="text-red-800">
+                    Las 24 horas del reporte vencen el {b.vence_reporte_cdmx} (CDMX).
+                  </strong>
                 </p>
-                <p className="text-xs text-red-800 mt-1">{adv.fundamento}</p>
-              </div>
-            )}
-            {aviso && (
-              <p className="border border-amber-300 bg-amber-50 rounded-lg px-4 py-3 text-sm text-amber-900 mt-2">
-                {aviso}
-              </p>
-            )}
-          </div>
-        );
-      })}
+                {b.tipo_match && (
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    {ETIQUETA_MATCH[b.tipo_match as CoincidenciaPendiente['tipo_match']] ?? b.tipo_match}:{' '}
+                    {b.valor_cliente} ↔ {b.valor_lista}
+                  </p>
+                )}
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Se levanta con firma desde la ficha del cliente.
+                </p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {Object.entries(avisos).map(([id, aviso]) => (
+        <p
+          key={id}
+          className="border border-amber-300 bg-amber-50 rounded-lg px-4 py-3 text-sm text-amber-900 mb-3"
+        >
+          {aviso}
+        </p>
+      ))}
 
       {pendientes.length === 0 ? (
         <p className="text-sm text-slate-400 italic">
@@ -348,6 +385,23 @@ export default function BandejaCoincidencias({
                   placeholder="Por qué es la persona, o por qué es un homónimo."
                   className="w-full border border-slate-300 rounded px-3 py-2 text-sm bg-white disabled:opacity-50"
                 />
+
+                <CamposFirma
+                  id={c.id}
+                  valor={firmas[c.id] ?? FIRMA_VACIA}
+                  onChange={(v) => setFirmas((f) => ({ ...f, [c.id]: v }))}
+                  deshabilitado={ocupada === c.id}
+                />
+
+                {/* Lo que antes decía un window.confirm, escrito antes del botón. */}
+                {esSanciones && c.lista && (
+                  <p className="text-sm text-red-900 mt-3">
+                    Confirmar contra {nombreLista(c.lista.tipo)} <strong>bloquea al cliente</strong>{' '}
+                    y hace nacer dos obligaciones inmediatas: suspender operaciones y reportar a
+                    la CNBV dentro de las 24 horas. Descartar lo deja operar: si es la persona,
+                    es un falso negativo.
+                  </p>
+                )}
 
                 <div className="flex flex-wrap gap-2 mt-2">
                   <button

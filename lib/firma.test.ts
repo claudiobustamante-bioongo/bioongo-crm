@@ -32,7 +32,9 @@ test('firma válida: la declaración se recorta y no hay autorización', () => {
 });
 
 test('el firmante del cuerpo nunca entra a la firma: lo pone la base desde la sesión', () => {
-  const r = validarFirma({ rol: 'asesor', declaracion: 'Declaro.', firmante: 'impostor@prueba.test' });
+  // Así llega un cuerpo JSON real: con lo que el cliente quiera mandar.
+  const cuerpo: Record<string, unknown> = { rol: 'asesor', declaracion: 'Declaro.', firmante: 'impostor@prueba.test' };
+  const r = validarFirma(cuerpo);
   assert.ok(r.ok);
   assert.deepEqual(Object.keys(r.firma).sort(), ['autorizacion_oficial', 'declaracion', 'rol']);
 });

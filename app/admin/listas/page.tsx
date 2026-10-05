@@ -9,6 +9,7 @@ import {
   TOPE_BODY_LISTA,
   esObligatoria,
 } from '@/lib/listas';
+import { SELECT_BLOQUEO_CON_COINCIDENCIA, aBloqueoEnBandeja } from '@/lib/bloqueo';
 
 /**
  * Listas de control PLD/FT · carga, historial y bandeja de coincidencias.
@@ -73,6 +74,15 @@ export default async function AdminListas() {
     .eq('estado', 'pendiente')
     .order('detectada_en', { ascending: false })
     .limit(TOPE_BANDEJA);
+
+  // Los bloqueos abiertos se leen de la base en cada carga: la bandeja no los
+  // recuerda, los consulta. Así un bloqueo sigue a la vista después de recargar,
+  // y desaparece solo cuando alguien lo levanta con firma.
+  const { data: bloqueos, error: errorBloqueos } = await supabase
+    .from('cliente_bloqueos')
+    .select(SELECT_BLOQUEO_CON_COINCIDENCIA)
+    .is('levantado_en', null)
+    .order('bloqueado_en', { ascending: false });
 
   const { count: totalPendientes } = await supabase
     .from('listas_coincidencias')
@@ -298,10 +308,16 @@ export default async function AdminListas() {
 
       <BandejaCoincidencias
         pendientes={(pendientes ?? []) as unknown as CoincidenciaPendiente[]}
+        bloqueos={((bloqueos ?? []) as unknown as Record<string, unknown>[]).map(aBloqueoEnBandeja)}
         totalPendientes={totalPendientes ?? 0}
         totalResueltas={totalResueltas ?? 0}
         tope={TOPE_BANDEJA}
         error={errorPendientes ? 'No se pudo leer la bandeja de coincidencias.' : ''}
+        errorBloqueos={
+          errorBloqueos
+            ? 'No se pudieron leer los bloqueos abiertos. No asumas que no hay ninguno.'
+            : ''
+        }
       />
     </main>
   );
