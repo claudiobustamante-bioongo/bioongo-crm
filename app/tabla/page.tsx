@@ -2,6 +2,11 @@ import { createClient } from '@/lib/supabase-server';
 import Link from 'next/link';
 import { EbrMasivo } from './EbrMasivo';
 import { IpsMasivo } from './IpsMasivo';
+import {
+  ALERTA_SIN_CLASIFICACION,
+  describirClasificacion,
+  requiereAlertaClasificacion,
+} from '@/lib/clasificacion';
 
 /**
  * Cotejo de clientes · la cartera completa, y las corridas masivas que la
@@ -33,7 +38,7 @@ export default async function Tabla() {
 
   const { data: clientes, error } = await supabase
     .from('clientes')
-    .select('codigo_cliente, status, nombre, apellido_paterno, apellido_materno, rfc, curp, correo, celular')
+    .select('codigo_cliente, status, nombre, apellido_paterno, apellido_materno, rfc, curp, correo, celular, clasificacion_inversionista')
     .order('codigo_cliente');
 
   if (error) return <div className="p-8 text-red-600">Error: {error.message}</div>;
@@ -42,6 +47,9 @@ export default async function Tabla() {
     ...c,
     nombre_completo: [c.nombre, c.apellido_paterno, c.apellido_materno].filter(Boolean).join(' '),
   }));
+
+  // Todo cliente debe tener carta: vigente o inactivo sin clasificación alerta.
+  const sinClasificacion = filas.filter(requiereAlertaClasificacion);
 
   const totalCampos = COLUMNAS.length;
   const completitud = (fila: Record<string, unknown>) =>
@@ -56,6 +64,25 @@ export default async function Tabla() {
         </div>
         <Link href="/" className="text-sm text-slate-500 hover:text-slate-800">← Volver a tarjetas</Link>
       </div>
+
+      {sinClasificacion.length > 0 && (
+        <section className="border-2 border-red-400 bg-red-50 rounded-lg px-4 py-3 mb-6">
+          <p className="text-sm font-semibold text-red-900">
+            {ALERTA_SIN_CLASIFICACION} · {sinClasificacion.length}{' '}
+            {sinClasificacion.length === 1 ? 'cliente' : 'clientes'}
+          </p>
+          <p className="text-sm text-red-900 mt-1">
+            {sinClasificacion.map((c, i) => (
+              <span key={c.codigo_cliente}>
+                {i > 0 && ', '}
+                <Link href={`/cliente/${c.codigo_cliente}`} className="underline underline-offset-2">
+                  {c.codigo_cliente}
+                </Link>
+              </span>
+            ))}
+          </p>
+        </section>
+      )}
 
       {/* --- Corridas masivas ------------------------------------------------- */}
 
@@ -82,6 +109,7 @@ export default async function Tabla() {
                 <th key={col.key} className="px-3 py-2 font-medium text-slate-600">{col.label}</th>
               ))}
               <th className="px-3 py-2 font-medium text-slate-600">Completo</th>
+              <th className="px-3 py-2 font-medium text-slate-600">Clasificación (R03)</th>
             </tr>
           </thead>
           <tbody>
@@ -118,6 +146,19 @@ export default async function Tabla() {
                     }`}>
                       {n}/{totalCampos}
                     </span>
+                  </td>
+                  <td className="px-3 py-2">
+                    {requiereAlertaClasificacion(fila) ? (
+                      <span className="text-xs px-2 py-0.5 rounded font-medium bg-red-100 text-red-700">
+                        {ALERTA_SIN_CLASIFICACION}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-slate-600">
+                        {fila.clasificacion_inversionista
+                          ? describirClasificacion(fila).etiqueta
+                          : '—'}
+                      </span>
+                    )}
                   </td>
                 </tr>
               );

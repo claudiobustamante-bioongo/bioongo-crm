@@ -10,7 +10,11 @@ import { evaluarRevisionAnual, formatearFecha } from '@/lib/revision-anual';
 import { SELECT_BLOQUEO_CON_COINCIDENCIA, aBloqueoEnBandeja } from '@/lib/bloqueo';
 import { OBLIGACIONES_SANCIONES, nombreLista } from '@/lib/listas';
 import LevantarBloqueo from './LevantarBloqueo';
-import { describirClasificacion } from '@/lib/clasificacion';
+import {
+  ALERTA_SIN_CLASIFICACION,
+  describirClasificacion,
+  requiereAlertaClasificacion,
+} from '@/lib/clasificacion';
 
 /** Los `numeric` de Postgres pueden llegar como texto. */
 function aNumero(valor: unknown): number | null {
@@ -279,6 +283,18 @@ export default async function FichaCliente({
             El sistema no presenta el reporte.
           </p>
           <LevantarBloqueo bloqueoId={bloqueo.id} />
+        </section>
+      )}
+
+      {/* --- Alerta: todo cliente debe tener carta (decisión del 6-oct-2026) --- */}
+      {requiereAlertaClasificacion(cliente) && (
+        <section className="border-2 border-red-400 bg-red-50 rounded-lg px-4 py-3 mb-6">
+          <p className="text-base font-semibold text-red-900">{ALERTA_SIN_CLASIFICACION}</p>
+          <p className="text-sm text-red-900 mt-1">
+            El cliente está {cliente.status} y no tiene clasificación de inversionista para el
+            R03 (campo 6). Todo cliente debe tener carta. Mientras no conste, no se reporta como
+            203 ni como 204.
+          </p>
         </section>
       )}
 
