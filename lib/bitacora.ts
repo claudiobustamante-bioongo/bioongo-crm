@@ -38,7 +38,9 @@ export type AccionBitacora =
   /** Cliente dado de baja. Misma acción que usó la migración del 30-sep-2026. */
   | 'baja'
   /** Bloqueo por sanciones levantado con firma (/api/levantar-bloqueo). */
-  | 'levantamiento_bloqueo';
+  | 'levantamiento_bloqueo'
+  /** Clasificación del inversionista (R03, campo 6) determinada por el asesor. */
+  | 'determinacion_clasificacion';
 
 export interface EventoBitacora {
   /** Tabla afectada. Debe coincidir con la que usan los triggers. */

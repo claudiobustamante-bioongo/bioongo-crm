@@ -398,6 +398,15 @@ export default async function FichaCliente({
               «no determinada» y «Ninguno» son cosas distintas.
             </p>
           )}
+          {/* Una clasificación por carta no se sustituye por determinación. */}
+          {cliente.clasificacion_fuente !== 'carta_firmada' && (
+            <Link
+              href={`/cliente/${codigo}/clasificacion`}
+              className="inline-block mt-3 text-sm text-slate-900 underline underline-offset-2 hover:text-slate-600"
+            >
+              {clasificacion.determinada ? 'Cambiar la determinación' : 'Determinar clasificación'}
+            </Link>
+          )}
         </div>
 
         <h3 className="text-sm font-semibold text-slate-700 mt-6 mb-2">

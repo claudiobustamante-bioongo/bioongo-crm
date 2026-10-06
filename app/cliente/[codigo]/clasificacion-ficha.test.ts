@@ -34,3 +34,16 @@ test('la ficha ya no dice que sin carta el cliente es 204', () => {
   assert.doesNotMatch(CODIGO, /categoría 204/);
   assert.doesNotMatch(CODIGO, /es categoría 204|es 204, sin importar/);
 });
+
+test('la página de captura no ofrece 203 y manda a la ruta de determinación', () => {
+  const PAGINA = sinComentarios(readFileSync(new URL('./clasificacion/page.tsx', import.meta.url), 'utf8'));
+  assert.match(PAGINA, /DETERMINABLES_POR_ASESOR\.map/);
+  assert.doesNotMatch(PAGINA, /value="203"|'203'/);
+  assert.match(PAGINA, /fetch\('\/api\/determinar-clasificacion'/);
+  assert.match(PAGINA, /validarDeterminacion\(/);
+});
+
+test('la ficha solo ofrece determinar cuando la clasificación no viene de carta', () => {
+  assert.match(CODIGO, /cliente\.clasificacion_fuente !== 'carta_firmada' &&/);
+  assert.match(CODIGO, /\/clasificacion`/);
+});
