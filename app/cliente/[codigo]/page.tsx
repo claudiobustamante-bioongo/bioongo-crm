@@ -10,6 +10,7 @@ import { evaluarRevisionAnual, formatearFecha } from '@/lib/revision-anual';
 import { SELECT_BLOQUEO_CON_COINCIDENCIA, aBloqueoEnBandeja } from '@/lib/bloqueo';
 import { OBLIGACIONES_SANCIONES, nombreLista } from '@/lib/listas';
 import LevantarBloqueo from './LevantarBloqueo';
+import { describirClasificacion } from '@/lib/clasificacion';
 
 /** Los `numeric` de Postgres pueden llegar como texto. */
 function aNumero(valor: unknown): number | null {
@@ -164,6 +165,8 @@ export default async function FichaCliente({
     .filter(Boolean).join(' ');
 
   const revision = evaluarRevisionAnual(cliente);
+  // R03 J-0315, campo 6. Se lee de la columna; null es «no determinada», no 204.
+  const clasificacion = describirClasificacion(cliente);
   const cartaFirmada = Boolean(cliente.carta_sofisticado_firmada);
 
   const campos = [
@@ -341,6 +344,47 @@ export default async function FichaCliente({
         </div>
 
         <h3 className="text-sm font-semibold text-slate-700 mt-6 mb-2">
+          Clasificación (R03, campo 6)
+        </h3>
+
+        <div
+          className={`border rounded-lg px-4 py-3 ${
+            clasificacion.determinada ? 'border-slate-200' : 'border-amber-300 bg-amber-50'
+          }`}
+        >
+          <span
+            className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${
+              clasificacion.determinada ? 'bg-slate-100 text-slate-700' : 'bg-amber-100 text-amber-800'
+            }`}
+          >
+            {clasificacion.etiqueta}
+          </span>
+          {clasificacion.determinada ? (
+            <dl className="mt-2 text-sm text-slate-700 space-y-1">
+              <div>
+                <dt className="inline text-slate-500">Fuente: </dt>
+                <dd className="inline">{clasificacion.fuente}</dd>
+              </div>
+              <div>
+                <dt className="inline text-slate-500">Registrada: </dt>
+                <dd className="inline">{formatearFecha(clasificacion.fecha) ?? clasificacion.fecha}</dd>
+              </div>
+              {clasificacion.nota && (
+                <div>
+                  <dt className="inline text-slate-500">Nota: </dt>
+                  <dd className="inline">{clasificacion.nota}</dd>
+                </div>
+              )}
+            </dl>
+          ) : (
+            <p className="text-sm text-amber-900 mt-2">
+              El expediente no dice qué clasificación tiene el cliente. No se reporta como 204:
+              «no determinada» y «Ninguno» son cosas distintas.
+            </p>
+          )}
+        </div>
+
+        <h3 className="text-sm font-semibold text-slate-700 mt-6 mb-2">
           Carta de cliente sofisticado
         </h3>
 
@@ -371,8 +415,9 @@ export default async function FichaCliente({
                 Sin carta
               </span>
               <p className="text-sm text-slate-600 mt-2">
-                Sin la carta del Anexo 1 Apartado A el cliente es categoría 204, sin
-                importar su patrimonio. La carta es constitutiva.
+                Sin la carta del Anexo 1 Apartado A el cliente no puede ser Sofisticado (203):
+                la carta es constitutiva. Eso no lo vuelve 204 por sí solo; su clasificación
+                queda sin determinar hasta que conste la carta o se determine otra.
               </p>
             </div>
           )}
