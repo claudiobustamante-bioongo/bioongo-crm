@@ -64,6 +64,16 @@
 -- (último asiento de bitácora: 30-sep-2026), así que en producción los
 -- triggers todavía no habían disparado después del cambio; eso quedó probado
 -- en la réplica.
+--
+-- PRIMERA ESCRITURA REAL DESPUÉS DEL REVOKE · 6-oct-2026, 19:27:20 UTC
+--
+-- La baja de CSPFU6473 desde la aplicación (/api/dar-baja, sesión de
+-- `authenticated`). Verificado por MCP: trg_bitacora disparó y escribió sus 3
+-- asientos (status, fecha_baja, motivo_baja), con el correo de la sesión como
+-- usuario, y la ruta escribió el suyo ('baja', origen 'aplicacion') 0.2 s
+-- después. Fueron los 4 únicos asientos desde el revoke. Confirma en
+-- producción lo que anticipó la réplica: sin EXECUTE sobre fn_bitacora, el
+-- trigger sigue disparando para authenticated.
 -- ===========================================================================
 
 begin;
