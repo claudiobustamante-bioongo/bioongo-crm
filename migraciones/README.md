@@ -131,3 +131,34 @@ y para los otros dos espejos.
 6. `set constraints all immediate` y una verificación dentro de la transacción:
    cero filas con el código viejo en las doce tablas.
 7. `commit`. Después, verificación aparte (antes y después) y archivo aquí.
+
+## Cómo se forma un `codigo_cliente` nuevo
+
+Decisión de Claudio, 6-oct-2026. Todo código que se asigne de aquí en adelante
+sigue esta regla:
+
+```
+CSPF + U + <2 primeros dígitos de la cuenta IBKR> + <2 últimos dígitos del año de nacimiento>
+```
+
+Ejemplo de forma: cuenta `U29…` y año de nacimiento `19xx` → `CSPFU29xx`.
+
+- **Siempre `CSPF`.** No se asignan códigos `CSPM` nuevos.
+- **Los `CSPM` existentes NO se renombran**: ya están reportados a la CNBV en el
+  R03 J-0315, y lo reportado manda. Renombrarlos abriría el mismo problema que
+  resolvió `2026-09-30-conciliacion-codigos-r03.sql`.
+- **Los dos insumos se leen del expediente, nunca se suponen.** Sin cuenta IBKR
+  o sin fecha de nacimiento en la base, el código no se calcula: el cliente se
+  queda con su código provisional hasta que los dos consten.
+- **Antes de usarlo, se comprueba que no choque** con `clientes.codigo_cliente`,
+  con `codigos_alias` (anterior y actual) ni con un ID ya reportado en el R03.
+  La regla no garantiza unicidad: dos clientes con cuenta `U29…` nacidos el
+  mismo año dan el mismo código. Si choca, se decide a mano; no se improvisa un
+  sufijo.
+
+**Los leads del formulario público** (`app/captura`) entran con un código
+provisional `LEAD-#####` aleatorio, porque el formulario solo pide nombre,
+correo y celular: no hay cuenta IBKR ni fecha de nacimiento con qué aplicar la
+regla. El código definitivo se asigna al darlo de alta. Mientras el lead no
+tenga filas hijas, ese cambio es un UPDATE de una sola fila; si ya las tiene, es
+un renombre y sigue la lista de comprobación de arriba.
