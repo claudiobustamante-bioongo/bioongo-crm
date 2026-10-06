@@ -1,7 +1,18 @@
 'use client';
 import { useState } from 'react';
 import { createClient } from '@/lib/supabase-browser';
+import { buscarChoques, validarCodigoNuevo } from '@/lib/codigo-cliente';
 
+/**
+ * Alta manual de un cliente.
+ *
+ * El código sigue la regla de códigos nuevos (migraciones/README.md): CSPFU +
+ * 2 primeros dígitos de la cuenta IBKR + 2 últimos del año de nacimiento. Antes
+ * de insertar se valida la forma y se comprueba que no choque con clientes ni
+ * con codigos_alias. Esta pantalla no pide cuenta ni fecha de nacimiento, así
+ * que no puede comprobar que los dígitos salgan de ellas: eso queda a cargo de
+ * quien captura. El choque con IDs ya reportados en el R03 se revisa a mano.
+ */
 export default function NuevoCliente() {
   const [form, setForm] = useState({
     codigo_cliente: '',
@@ -13,6 +24,7 @@ export default function NuevoCliente() {
     rfc: '',
   });
   const [mensaje, setMensaje] = useState('');
+  const [guardando, setGuardando] = useState(false);
 
   const supabase = createClient();
 
@@ -21,20 +33,47 @@ export default function NuevoCliente() {
   }
 
   async function guardar() {
-    const { error } = await supabase.from('clientes').insert(form);
-    if (error) {
-      setMensaje('Error: ' + error.message);
-    } else {
-      setMensaje('Cliente guardado ✓');
-      setForm({
-        codigo_cliente: '', nombre: '', apellido_paterno: '',
-        apellido_materno: '', correo: '', celular: '', rfc: '',
-      });
+    const validacion = validarCodigoNuevo(form.codigo_cliente);
+    if (!validacion.ok) {
+      setMensaje('Error: ' + validacion.error);
+      return;
+    }
+
+    setGuardando(true);
+    setMensaje('');
+    try {
+      const { choques, error: errorChoques } = await buscarChoques(supabase, validacion.codigo);
+      if (errorChoques) {
+        setMensaje('Error: no se pudo comprobar si el código ya existe. No se guardó nada.');
+        return;
+      }
+      if (choques.length > 0) {
+        setMensaje(
+          `Error: el código ${validacion.codigo} ya existe en ${choques.join(' y ')}. ` +
+            'Si dos clientes dan el mismo código por la regla, se decide a mano.',
+        );
+        return;
+      }
+
+      const { error } = await supabase
+        .from('clientes')
+        .insert({ ...form, codigo_cliente: validacion.codigo });
+      if (error) {
+        setMensaje('Error: ' + error.message);
+      } else {
+        setMensaje(`Cliente ${validacion.codigo} guardado ✓`);
+        setForm({
+          codigo_cliente: '', nombre: '', apellido_paterno: '',
+          apellido_materno: '', correo: '', celular: '', rfc: '',
+        });
+      }
+    } finally {
+      setGuardando(false);
     }
   }
 
   const campos = [
-    { key: 'codigo_cliente', label: 'Código de cliente' },
+    { key: 'codigo_cliente', label: 'Código de cliente (CSPFU + 4 dígitos)' },
     { key: 'nombre', label: 'Nombre(s)' },
     { key: 'apellido_paterno', label: 'Apellido paterno' },
     { key: 'apellido_materno', label: 'Apellido materno' },
@@ -58,11 +97,16 @@ export default function NuevoCliente() {
             />
           </div>
         ))}
+        <p className="text-xs text-slate-500">
+          El código es CSPFU + los 2 primeros dígitos de la cuenta IBKR + los 2 últimos del año
+          de nacimiento. Siempre CSPF.
+        </p>
         <button
           onClick={guardar}
-          className="bg-slate-900 text-white rounded py-2 mt-2 hover:bg-slate-700"
+          disabled={guardando}
+          className="bg-slate-900 text-white rounded py-2 mt-2 hover:bg-slate-700 disabled:opacity-50"
         >
-          Guardar cliente
+          {guardando ? 'Guardando…' : 'Guardar cliente'}
         </button>
         {mensaje && <p className="text-sm mt-2">{mensaje}</p>}
       </div>
