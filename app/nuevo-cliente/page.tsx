@@ -1,28 +1,34 @@
 'use client';
 import { useState } from 'react';
 import { createClient } from '@/lib/supabase-browser';
-import { buscarChoques, validarCodigoNuevo } from '@/lib/codigo-cliente';
+import { buscarChoques, validarAltaCliente } from '@/lib/codigo-cliente';
 
 /**
  * Alta manual de un cliente.
  *
  * El código sigue la regla de códigos nuevos (migraciones/README.md): CSPFU +
- * 2 primeros dígitos de la cuenta IBKR + 2 últimos del año de nacimiento. Antes
- * de insertar se valida la forma y se comprueba que no choque con clientes ni
- * con codigos_alias. Esta pantalla no pide cuenta ni fecha de nacimiento, así
- * que no puede comprobar que los dígitos salgan de ellas: eso queda a cargo de
- * quien captura. El choque con IDs ya reportados en el R03 se revisa a mano.
+ * 2 primeros dígitos de la cuenta IBKR + 2 últimos del año de nacimiento. La
+ * cuenta es obligatoria (un prospecto sin cuenta entra por /captura con LEAD-)
+ * y la fecha opcional. Antes de insertar se valida la forma, que los dígitos
+ * salgan de la cuenta y, si hay fecha, del año, y que ni el código choque con
+ * clientes o codigos_alias ni la cuenta con otro cliente. Si algo no coincide,
+ * se avisa y no se guarda. El choque con IDs ya reportados en el R03 se revisa
+ * a mano.
  */
+const FORM_VACIO = {
+  codigo_cliente: '',
+  cuenta_ibkr: '',
+  fecha_nacimiento: '',
+  nombre: '',
+  apellido_paterno: '',
+  apellido_materno: '',
+  correo: '',
+  celular: '',
+  rfc: '',
+};
+
 export default function NuevoCliente() {
-  const [form, setForm] = useState({
-    codigo_cliente: '',
-    nombre: '',
-    apellido_paterno: '',
-    apellido_materno: '',
-    correo: '',
-    celular: '',
-    rfc: '',
-  });
+  const [form, setForm] = useState(FORM_VACIO);
   const [mensaje, setMensaje] = useState('');
   const [guardando, setGuardando] = useState(false);
 
@@ -33,7 +39,11 @@ export default function NuevoCliente() {
   }
 
   async function guardar() {
-    const validacion = validarCodigoNuevo(form.codigo_cliente);
+    const validacion = validarAltaCliente({
+      codigo: form.codigo_cliente,
+      cuenta: form.cuenta_ibkr,
+      fecha: form.fecha_nacimiento,
+    });
     if (!validacion.ok) {
       setMensaje('Error: ' + validacion.error);
       return;
@@ -42,30 +52,41 @@ export default function NuevoCliente() {
     setGuardando(true);
     setMensaje('');
     try {
-      const { choques, error: errorChoques } = await buscarChoques(supabase, validacion.codigo);
+      const { choques, error: errorChoques } = await buscarChoques(
+        supabase,
+        validacion.codigo,
+        validacion.cuenta,
+      );
       if (errorChoques) {
-        setMensaje('Error: no se pudo comprobar si el código ya existe. No se guardó nada.');
+        setMensaje('Error: no se pudo comprobar si el código o la cuenta ya existen. No se guardó nada.');
         return;
       }
-      if (choques.length > 0) {
+      const choquesCodigo = choques.filter((c) => c !== 'cuenta_ibkr');
+      if (choquesCodigo.length > 0) {
         setMensaje(
-          `Error: el código ${validacion.codigo} ya existe en ${choques.join(' y ')}. ` +
+          `Error: el código ${validacion.codigo} ya existe en ${choquesCodigo.join(' y ')}. ` +
             'Si dos clientes dan el mismo código por la regla, se decide a mano.',
         );
         return;
       }
+      if (choques.includes('cuenta_ibkr')) {
+        setMensaje(
+          `Error: la cuenta ${validacion.cuenta} ya está asignada a otro cliente. No se guardó nada.`,
+        );
+        return;
+      }
 
-      const { error } = await supabase
-        .from('clientes')
-        .insert({ ...form, codigo_cliente: validacion.codigo });
+      const { error } = await supabase.from('clientes').insert({
+        ...form,
+        codigo_cliente: validacion.codigo,
+        cuenta_ibkr: validacion.cuenta,
+        fecha_nacimiento: validacion.fecha,
+      });
       if (error) {
         setMensaje('Error: ' + error.message);
       } else {
         setMensaje(`Cliente ${validacion.codigo} guardado ✓`);
-        setForm({
-          codigo_cliente: '', nombre: '', apellido_paterno: '',
-          apellido_materno: '', correo: '', celular: '', rfc: '',
-        });
+        setForm(FORM_VACIO);
       }
     } finally {
       setGuardando(false);
@@ -74,6 +95,8 @@ export default function NuevoCliente() {
 
   const campos = [
     { key: 'codigo_cliente', label: 'Código de cliente (CSPFU + 4 dígitos)' },
+    { key: 'cuenta_ibkr', label: 'Cuenta IBKR (U + dígitos)' },
+    { key: 'fecha_nacimiento', label: 'Fecha de nacimiento (AAAA-MM-DD, opcional)' },
     { key: 'nombre', label: 'Nombre(s)' },
     { key: 'apellido_paterno', label: 'Apellido paterno' },
     { key: 'apellido_materno', label: 'Apellido materno' },
@@ -99,7 +122,8 @@ export default function NuevoCliente() {
         ))}
         <p className="text-xs text-slate-500">
           El código es CSPFU + los 2 primeros dígitos de la cuenta IBKR + los 2 últimos del año
-          de nacimiento. Siempre CSPF.
+          de nacimiento. Siempre CSPF. Sin cuenta no hay código definitivo: un prospecto sin
+          cuenta se captura en /captura con LEAD-.
         </p>
         <button
           onClick={guardar}
