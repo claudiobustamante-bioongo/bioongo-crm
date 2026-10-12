@@ -12,6 +12,7 @@ import assert from 'node:assert/strict';
 import {
   ErrorEBR,
   VERIFICACIONES,
+  VERIF_PEP,
   VERIF_SANCIONES,
   construirInputsEBR,
   evaluarEBR,
@@ -203,6 +204,130 @@ test('Declaración PEP no capturada no equivale a "no es PEP"', () => {
   assert.equal(activos(r), 0);
   assert.ok(r.motivos_preliminar.some((m) => m.includes('declaración PEP')));
   assert.match(r.supuestos_evaluados[2].detalle, /no capturada/);
+});
+
+// ---------------------------------------------------------------------------
+// Declaración PEP parcial (12-oct-2026): null ≠ false en todo el flujo
+// ---------------------------------------------------------------------------
+//
+// La verificación PEP se cierra solo si constan los cuatro campos. Con alguno
+// en null, el expediente dice «no consta <campo>», la evaluación queda
+// preliminar con esa razón escrita y la matriz dice «NO CONSTA». El grado y el
+// puntaje NO cambian: se comparan siempre contra el caso de los cuatro en false.
+
+const pepMatriz = (r: ReturnType<typeof evaluarEBR>) =>
+  r.matriz_factores.find((f) => f.factor === 'PERSONA POLÍTICAMENTE EXPUESTA')!;
+const verifPepPendiente = (r: ReturnType<typeof evaluarEBR>) =>
+  r.verificaciones_pendientes.includes(VERIF_PEP);
+const motivoPep = (r: ReturnType<typeof evaluarEBR>) =>
+  r.motivos_preliminar.find((m) => m.startsWith('No consta la declaración PEP de:'));
+
+const CUATRO_FALSE = evaluarEBR(base(), AHORA);
+
+/** Mismo grado, mismo puntaje, mismos supuestos activos que con los cuatro en false. */
+function mismoGradoYPuntaje(r: ReturnType<typeof evaluarEBR>) {
+  assert.equal(r.grado_riesgo, CUATRO_FALSE.grado_riesgo);
+  assert.equal(r.matriz_puntaje_total, CUATRO_FALSE.matriz_puntaje_total);
+  assert.equal(r.matriz_banda, CUATRO_FALSE.matriz_banda);
+  assert.equal(pepMatriz(r).puntaje, pepMatriz(CUATRO_FALSE).puntaje);
+  assert.equal(activos(r), activos(CUATRO_FALSE));
+  assert.equal(r.es_pep, false);
+  assert.equal(r.pep_extranjero, false);
+}
+
+test('PEP · los cuatro en false: verificación cerrada y el texto de siempre', () => {
+  const r = CUATRO_FALSE;
+  assert.equal(verifPepPendiente(r), false);
+  assert.equal(r.supuestos_evaluados[2].detalle, 'El cliente declara no ser PEP ni tener familiar PEP.');
+  assert.equal(pepMatriz(r).opcion_seleccionada, 'NO');
+  assert.equal(motivoPep(r), undefined);
+  assert.equal(r.observaciones.some((o) => o.factor === 'SUPUESTO 3'), false);
+});
+
+test('PEP · familiar nacional null: preliminar con «no consta familiar de PEP nacional»', () => {
+  const r = evaluarEBR(base({ familiar_pep_nacional: null }), AHORA);
+  mismoGradoYPuntaje(r);
+  assert.equal(r.evaluacion_preliminar, true);
+  assert.equal(verifPepPendiente(r), true);
+  assert.equal(motivoPep(r), 'No consta la declaración PEP de: familiar de PEP nacional (apartado 4.7).');
+  const detalle = r.supuestos_evaluados[2].detalle;
+  assert.match(detalle, /No consta: familiar de PEP nacional\./);
+  assert.doesNotMatch(detalle, /ni tener familiar PEP/);
+  assert.equal(pepMatriz(r).opcion_seleccionada, 'NO CONSTA');
+  // Solo el extranjero lleva la advertencia de la regla automática.
+  assert.ok(r.observaciones.some((o) => o.factor === 'SUPUESTO 3' && !/regla automática/.test(o.nota)));
+});
+
+test('PEP · familiar extranjero null: preliminar y aviso de que la regla automática no se evaluó', () => {
+  const r = evaluarEBR(base({ familiar_pep_extranjero: null }), AHORA);
+  mismoGradoYPuntaje(r);
+  assert.equal(r.evaluacion_preliminar, true);
+  assert.equal(verifPepPendiente(r), true);
+  assert.equal(motivoPep(r), 'No consta la declaración PEP de: familiar de PEP extranjero (apartado 4.7).');
+  assert.match(r.supuestos_evaluados[2].detalle, /No consta: familiar de PEP extranjero\./);
+  assert.equal(pepMatriz(r).opcion_seleccionada, 'NO CONSTA');
+  const obs = r.observaciones.find((o) => o.factor === 'SUPUESTO 3');
+  assert.match(obs!.nota, /regla automática de ALTO por PEP extranjero.*no pudo evaluarse/);
+});
+
+test('PEP · titular nacional null: preliminar con su razón', () => {
+  const r = evaluarEBR(base({ es_pep_nacional_declarado: null }), AHORA);
+  mismoGradoYPuntaje(r);
+  assert.equal(r.evaluacion_preliminar, true);
+  assert.equal(verifPepPendiente(r), true);
+  assert.equal(motivoPep(r), 'No consta la declaración PEP de: PEP nacional (apartado 4.7).');
+  const detalle = r.supuestos_evaluados[2].detalle;
+  assert.match(detalle, /^El cliente declara no ser PEP extranjero, familiar de PEP nacional ni familiar de PEP extranjero\./);
+  assert.match(detalle, /No consta: PEP nacional\.$/);
+  assert.equal(pepMatriz(r).opcion_seleccionada, 'NO CONSTA');
+});
+
+test('PEP · titular extranjero null: preliminar y aviso de la regla automática', () => {
+  const r = evaluarEBR(base({ es_pep_extranjero_declarado: null }), AHORA);
+  mismoGradoYPuntaje(r);
+  assert.equal(r.evaluacion_preliminar, true);
+  assert.equal(verifPepPendiente(r), true);
+  assert.equal(motivoPep(r), 'No consta la declaración PEP de: PEP extranjero (apartado 4.7).');
+  assert.match(r.supuestos_evaluados[2].detalle, /No consta: PEP extranjero\.$/);
+  const obs = r.observaciones.find((o) => o.factor === 'SUPUESTO 3');
+  assert.match(obs!.nota, /no pudo evaluarse/);
+});
+
+test('PEP · los cuatro null: el comportamiento de siempre, con la matriz en «NO CONSTA»', () => {
+  const r = evaluarEBR(
+    base({
+      es_pep_nacional_declarado: null,
+      es_pep_extranjero_declarado: null,
+      familiar_pep_nacional: null,
+      familiar_pep_extranjero: null,
+    }),
+    AHORA,
+  );
+  mismoGradoYPuntaje(r);
+  assert.equal(r.evaluacion_preliminar, true);
+  assert.equal(verifPepPendiente(r), true);
+  assert.ok(r.motivos_preliminar.includes('No consta la declaración PEP (apartado 4.7).'));
+  assert.equal(r.supuestos_evaluados[2].detalle, 'Declaración PEP no capturada. Supuesto no evaluable.');
+  assert.equal(pepMatriz(r).opcion_seleccionada, 'NO CONSTA');
+});
+
+test('PEP · uno true y otro null: mismo grado que con el otro en false, más el «no consta»', () => {
+  const conFalse = evaluarEBR(base({ es_pep_nacional_declarado: true }), AHORA);
+  const conNull = evaluarEBR(base({ es_pep_nacional_declarado: true, familiar_pep_nacional: null }), AHORA);
+  assert.equal(conNull.grado_riesgo, conFalse.grado_riesgo);
+  assert.equal(conNull.matriz_puntaje_total, conFalse.matriz_puntaje_total);
+  assert.equal(activos(conNull), activos(conFalse));
+  assert.equal(conNull.es_pep, true);
+  assert.equal(pepMatriz(conNull).opcion_seleccionada, 'SÍ');
+  assert.equal(conNull.supuestos_evaluados[2].activo, true);
+  assert.equal(
+    conNull.supuestos_evaluados[2].detalle,
+    'PEP nacional declarado. No consta: familiar de PEP nacional.',
+  );
+  assert.equal(verifPepPendiente(conNull), true);
+  assert.ok(motivoPep(conNull));
+  // Con los cuatro constando, la verificación ya no queda pendiente por PEP.
+  assert.equal(verifPepPendiente(conFalse), false);
 });
 
 // ---------------------------------------------------------------------------

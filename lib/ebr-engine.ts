@@ -478,6 +478,32 @@ function marcarPreliminar(ctx: Contexto, motivo: string): void {
   if (!ctx.motivosPreliminar.includes(motivo)) ctx.motivosPreliminar.push(motivo);
 }
 
+/**
+ * Los cuatro campos de la declaración PEP, con la etiqueta que va al
+ * expediente. `extranjero` marca los dos que alimentan la regla automática de
+ * ALTO (titular o familiar de PEP extranjero, criterio del 7-sep-2026).
+ */
+const CAMPOS_PEP = [
+  { campo: 'es_pep_nacional_declarado', etiqueta: 'PEP nacional', extranjero: false },
+  { campo: 'es_pep_extranjero_declarado', etiqueta: 'PEP extranjero', extranjero: true },
+  { campo: 'familiar_pep_nacional', etiqueta: 'familiar de PEP nacional', extranjero: false },
+  { campo: 'familiar_pep_extranjero', etiqueta: 'familiar de PEP extranjero', extranjero: true },
+] as const;
+
+type CampoPep = (typeof CAMPOS_PEP)[number];
+
+/**
+ * Campos PEP que no constan (null o ausentes). Fuente única para el texto del
+ * Supuesto 3, la marca de preliminar, la matriz y la verificación PEP:
+ * null ≠ false en todo el flujo. Un campo que no consta nunca se lee como
+ * «declaró que no».
+ */
+export function camposPepSinConstar(inputs: EBRInputs): CampoPep[] {
+  return CAMPOS_PEP.filter((c) => inputs[c.campo] === null || inputs[c.campo] === undefined);
+}
+
+const listaEtiquetas = (campos: readonly CampoPep[]) => campos.map((c) => c.etiqueta).join(', ');
+
 // ---------------------------------------------------------------------------
 // Utilidades
 // ---------------------------------------------------------------------------
@@ -687,8 +713,12 @@ export function construirMatriz(
     ),
   );
 
-  // 5 · PEP.
-  factores.push(fila('PERSONA POLÍTICAMENTE EXPUESTA', esPep ? 'SÍ' : 'NO', PEP[esPep ? 'si' : 'no']));
+  // 5 · PEP. Con algún campo de la declaración sin constar, el valor dice
+  // «NO CONSTA» —el expediente no afirma lo que el cliente no dijo— pero el
+  // puntaje sigue siendo el de «NO» (Claudio, 12-oct-2026): esto corrige el
+  // texto, no la metodología.
+  const valorPep = esPep ? 'SÍ' : camposPepSinConstar(inputs).length > 0 ? 'NO CONSTA' : 'NO';
+  factores.push(fila('PERSONA POLÍTICAMENTE EXPUESTA', valorPep, PEP[esPep ? 'si' : 'no']));
 
   // 6 · Listas bloqueadas. Sin búsqueda ejecutada no se puede afirmar una
   // coincidencia: se registra NO y la evaluación queda preliminar.
@@ -1006,9 +1036,43 @@ function evaluarSupuesto3(inputs: EBRInputs, ctx: Contexto, esPep: boolean): Sup
   if (inputs.familiar_pep_extranjero) detalles.push('familiar de PEP extranjero');
   if (inputs.override_pep) detalles.push('coincidencia PEP por screening');
 
+  // Declaración completa: los cuatro constan. Texto de siempre.
+  const sinConstar = camposPepSinConstar(inputs);
+  if (sinConstar.length === 0) {
+    return {
+      ...base,
+      detalle: esPep ? detalles.join('; ') + '.' : 'El cliente declara no ser PEP ni tener familiar PEP.',
+      activo: esPep,
+    };
+  }
+
+  // Declaración parcial. Lo que consta se dice tal cual y lo que no consta se
+  // nombra: nunca «no PEP ni familiar PEP» con un campo en null. `activo` no
+  // cambia —el grado y el puntaje tampoco—; cambian el texto y la marca de
+  // preliminar.
+  const negados = CAMPOS_PEP.filter((c) => inputs[c.campo] === false);
+  const loQueConsta = esPep
+    ? detalles.join('; ') + '.'
+    : negados.length > 0
+      ? `El cliente declara no ser ${listaEtiquetas(negados).replace(/, (?=[^,]*$)/, ' ni ')}.`
+      : '';
+  const extranjeroSinConstar = sinConstar.some((c) => c.extranjero);
+
+  anotar(
+    ctx,
+    'SUPUESTO 3',
+    `No consta la declaración de: ${listaEtiquetas(sinConstar)}. La ausencia de registro no ` +
+      'equivale a una respuesta negativa.' +
+      (extranjeroSinConstar
+        ? ' La regla automática de ALTO por PEP extranjero, propio o de familiar (apartado 4.7), ' +
+          'no pudo evaluarse sobre ese campo.'
+        : ''),
+  );
+  marcarPreliminar(ctx, `No consta la declaración PEP de: ${listaEtiquetas(sinConstar)} (apartado 4.7).`);
+
   return {
     ...base,
-    detalle: esPep ? detalles.join('; ') + '.' : 'El cliente declara no ser PEP ni tener familiar PEP.',
+    detalle: `${loQueConsta} No consta: ${listaEtiquetas(sinConstar)}.`.trim(),
     activo: esPep,
   };
 }
@@ -1357,9 +1421,11 @@ export function evaluarEBR(inputs: EBRInputs, ahora: Date = new Date()): EBRResu
     // materia fiscal, no PLD, y darla por hecha al cargar el 69-B es
     // exactamente lo que no puede pasar.
     if (v === VERIF_SANCIONES) return !estadoListas.cierraOnuOfac;
-    if (v === VERIF_PEP) {
-      return inputs.es_pep_nacional_declarado === null && inputs.override_pep === undefined;
-    }
+    // La consulta es de la condición PEP propia Y de familiares: se cierra solo
+    // si constan los cuatro campos. Hasta el 12-oct-2026 bastaba el nacional
+    // del titular, y un familiar en null la daba por hecha. `override_pep`
+    // sigue sin conectarse (no hay lista PEP_NACIONAL cargada) y no la cierra.
+    if (v === VERIF_PEP) return camposPepSinConstar(inputs).length > 0;
     // Las otras cuatro no tienen dónde registrarse en la base: siempre pendientes.
     return true;
   });
