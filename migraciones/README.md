@@ -71,10 +71,21 @@ escribieron, y así debe ser.
 | `perfil_riesgo_historico` | `codigo_cliente` |
 | `cliente_bloqueos_historico` | `codigo_cliente` |
 | `firmas_cumplimiento_historico` | `codigo_cliente` |
+| `documentos_expediente_historico` | `codigo_cliente` |
+| `documentos_expediente` | `codigo_cliente` (ver abajo) |
 | `ebr_evaluaciones.entrada`, `snapshot` de los espejos | el jsonb de la fotografía |
 
+**`documentos_expediente` tampoco se renombra, y no puede.** El CHECK
+`documentos_ruta_forma` ata `ruta_storage` al código (`tipo/codigo/fecha_hash.pdf`)
+y la ruta del objeto en Storage no se renombra nunca: un `UPDATE` del código
+falla en ese CHECK. El documento conserva el código con el que se archivó, igual
+que la auditoría (`2026-10-14-documentos-expediente.sql`). **Qué pasa si se
+olvida:** nada se rompe en la base, pero la ficha del cliente renombrado deja de
+mostrar sus documentos si los busca solo por el código vigente; por eso la ficha
+los busca por el código vigente **más sus `codigos_alias`**.
+
 Si alguien agrega mañana una tabla con código de cliente, va en una de estas
-tres listas en el mismo commit. Para encontrarlas todas:
+listas en el mismo commit. Para encontrarlas todas:
 
 ```sql
 select table_name, column_name
