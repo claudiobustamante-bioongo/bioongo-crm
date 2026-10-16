@@ -15,6 +15,8 @@ import {
   describirClasificacion,
   requiereAlertaClasificacion,
 } from '@/lib/clasificacion';
+import { hoyCDMX } from '@/lib/baja';
+import Documentos, { type DocumentoEnFicha, type ModoCarta } from './Documentos';
 
 /** Los `numeric` de Postgres pueden llegar como texto. */
 function aNumero(valor: unknown): number | null {
@@ -167,6 +169,58 @@ export default async function FichaCliente({
 
   const nombre = [cliente.nombre, cliente.apellido_paterno, cliente.apellido_materno]
     .filter(Boolean).join(' ');
+
+  // Documentos del expediente. documentos_expediente NO se renombra (el CHECK de
+  // la ruta lo impide; migraciones/README.md): un documento conserva el código
+  // con el que se archivó. Por eso se buscan por el código vigente MÁS todos sus
+  // códigos anteriores, siguiendo la cadena de codigos_alias (A → B → C).
+  const codigosExpediente = new Set<string>([codigo]);
+  let frontera = [codigo];
+  for (let i = 0; i < 10 && frontera.length > 0; i++) {
+    const { data: alias } = await supabase
+      .from('codigos_alias')
+      .select('codigo_anterior')
+      .in('codigo_actual', frontera);
+    frontera = (alias ?? [])
+      .map((a) => a.codigo_anterior as string)
+      .filter((c) => !codigosExpediente.has(c));
+    frontera.forEach((c) => codigosExpediente.add(c));
+  }
+
+  const { data: filasDocumentos, error: errorDocumentos } = await supabase
+    .from('documentos_expediente')
+    .select('id, codigo_cliente, tipo, fecha_documento, created_at, subido_por, reemplaza_a')
+    .in('codigo_cliente', [...codigosExpediente])
+    .order('created_at', { ascending: false });
+
+  const reemplazados = new Set(
+    (filasDocumentos ?? []).map((d) => d.reemplaza_a as string | null).filter(Boolean),
+  );
+  const documentos: DocumentoEnFicha[] = (filasDocumentos ?? []).map((d) => ({
+    id: d.id,
+    codigoCliente: d.codigo_cliente,
+    tipo: d.tipo,
+    fechaDocumento: d.fecha_documento,
+    creadoEn: d.created_at,
+    subidoPor: d.subido_por,
+    reemplazado: reemplazados.has(d.id),
+  }));
+
+  // Lo que hará «Registrar carta», con las mismas reglas que fn_registrar_documento.
+  // La función solo ve las cartas archivadas bajo el código vigente: una carta
+  // bajo un código anterior no se puede reemplazar desde aquí.
+  const cartaVigente =
+    documentos.find(
+      (d) => d.tipo === 'carta_clasificacion' && d.codigoCliente === codigo && !d.reemplazado,
+    ) ?? null;
+  const modoCarta: ModoCarta =
+    cliente.status === 'baja'
+      ? 'no_disponible'
+      : cartaVigente
+        ? 'reemplazo'
+        : cliente.clasificacion_fuente === 'carta_firmada'
+          ? 'adjuntar'
+          : 'nueva';
 
   const revision = evaluarRevisionAnual(cliente);
   // R03 J-0315, campo 6. Se lee de la columna; null es «no determinada», no 204.
@@ -448,6 +502,23 @@ export default async function FichaCliente({
           )}
         </div>
       </section>
+
+      {errorDocumentos ? (
+        <section className="mt-8">
+          <h2 className="text-lg font-semibold mb-3">Documentos</h2>
+          <p className="border border-red-300 bg-red-50 rounded-lg px-4 py-3 text-sm text-red-900">
+            No se pudieron leer los documentos del expediente. No los des por inexistentes.
+          </p>
+        </section>
+      ) : (
+        <Documentos
+          codigo={codigo}
+          documentos={documentos}
+          modoCarta={modoCarta}
+          cartaVigenteId={cartaVigente?.id ?? null}
+          hoy={hoyCDMX()}
+        />
+      )}
 
       <PerfilIA codigo={codigo} inicial={perfilRiesgo?.perfil_ia ?? null} />
       <CalcularIPS codigo={codigo} inicial={ipsGuardado} />

@@ -40,7 +40,20 @@ export type AccionBitacora =
   /** Bloqueo por sanciones levantado con firma (/api/levantar-bloqueo). */
   | 'levantamiento_bloqueo'
   /** Clasificación del inversionista (R03, campo 6) determinada por el asesor. */
-  | 'determinacion_clasificacion';
+  | 'determinacion_clasificacion'
+  /*
+   * Las tres siguientes las escribe la BASE, dentro de fn_registrar_documento y
+   * fn_registrar_consulta_documento (migraciones/2026-10-14-documentos-
+   * expediente.sql), en la misma transacción que el documento. Las rutas de
+   * /api/documentos NO llaman a registrarEvento: sería un asiento duplicado. Están
+   * aquí para que el vocabulario de la bitácora siga siendo uno solo.
+   */
+  /** Carta de clasificación archivada (nueva, adjuntar o reemplazo). */
+  | 'registro_carta_clasificacion'
+  /** Cualquier otro documento archivado en el expediente. */
+  | 'archivo_documento'
+  /** Consulta de un documento: se emitió un enlace firmado de corta duración. */
+  | 'consulta_documento';
 
 export interface EventoBitacora {
   /** Tabla afectada. Debe coincidir con la que usan los triggers. */

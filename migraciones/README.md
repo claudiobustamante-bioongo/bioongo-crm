@@ -1,12 +1,14 @@
 # Migraciones
 
-Scripts de SQL que se corrieron **a mano** en el SQL Editor de Supabase, en
-orden cronológico por nombre de archivo.
+Scripts de SQL que se corrieron **a mano** contra producción, en orden
+cronológico por nombre de archivo. Hasta el 14-oct-2026, en el SQL Editor de
+Supabase; desde el 15-oct-2026, con psql (ver «Correr un script con psql»).
 
 Esto NO es una cadena de migraciones de la CLI de Supabase y no se aplica sola.
-El acceso de la aplicación a la base es de solo lectura para DDL: los cambios de
-esquema y las correcciones de datos los ejecuta Claudio pegando el script. Esta
-carpeta es el **archivo de lo ya ejecutado**, no una cola de lo pendiente.
+El acceso de la aplicación a la base es de solo lectura para DDL, y el MCP de
+Supabase también: los cambios de esquema y las correcciones de datos se corren
+con psql **solo después de que Claudio apruebe el comando exacto**. Esta carpeta
+es el **archivo de lo ya ejecutado**, no una cola de lo pendiente.
 
 Reglas de la carpeta:
 
@@ -17,6 +19,139 @@ Reglas de la carpeta:
   aquí: no habría cómo distinguir el estado real de la base del propuesto.
 - Nunca llevan nombres, RFC, CURP ni correos. Los `codigo_cliente` sí: sin ellos
   el script deja de decir sobre qué expedientes actuó.
+- El usuario tampoco va escrito en el script: se pasa como variable de psql
+  (`-v usuario=…`, ver abajo). Precedente de por qué: el asiento manual de
+  `2026-10-14-carta-CSPFU2963.sql` traía el correo como literal y hubo que
+  sustituirlo para archivarlo.
+
+## Correr un script con psql
+
+Desde el 15-oct-2026 los scripts los corre Claude con psql 17, y cada comando lo
+aprueba Claudio antes de correrlo. `~/.claude/settings.json` tiene `ask` para
+`Bash(psql:*)`, así que psql siempre pide permiso. El MCP de Supabase sigue en
+solo lectura.
+
+### Conexión
+
+Servicio de libpq, sin URI ni contraseña en el comando:
+
+- `~/.pg_service.conf`, sección `[bioongo]`: Session pooler
+  (`aws-0-us-east-1.pooler.supabase.com:5432`, usuario `postgres.<ref>`,
+  `sslmode=require`, `application_name=bioongo-psql`). WSL no tiene IPv6, por eso
+  el pooler y no la conexión directa; y el puerto 5432 (session), no el 6543
+  (transaction), que no sirve para scripts con `BEGIN … COMMIT`.
+- La contraseña vive **solo** en `~/.pgpass` (permisos 600), que Claude no lee.
+  Es la contraseña de la base (Project Settings → Database), que no usan ni la app
+  (llaves de API) ni el MCP (token). En `.pgpass`, `:` y `\` van como `\:` y `\\`.
+- Nada de esto vive en `.env.local`: Next lo carga y la app no necesita la
+  contraseña del rol `postgres`.
+- **Los secretos (`~/.pgpass`, `.env.local`) se editan con `nano` en la
+  terminal, nunca en el editor de Cursor**: lo que se selecciona en el IDE entra
+  al contexto de Claude. Así se filtró una contraseña de la base el 15-oct-2026,
+  y hubo que rotarla.
+- `~/.claude/settings.json` tiene reglas `deny` para que Claude no lea
+  `~/.pgpass`: `Read(~/.pgpass)`, `Edit(~/.pgpass)`, `Bash(*pgpass*)` y
+  `Bash(*PGPASSFILE*)`. Son reglas sobre el texto del comando, no una barrera del
+  sistema operativo: un comando que esconda la ruta no lo detienen. psql sigue
+  funcionando porque libpq lee el archivo por su cuenta.
+
+`application_name=bioongo-psql` no llega a la base: el pooler lo reemplaza y en
+`pg_stat_activity` las conexiones salen como `Supavisor` (verificado el
+15-oct-2026). Lo que distingue a un script de psql es `canal: psql` en los claims
+y en el asiento manual.
+
+### Plantilla del comando
+
+```
+psql service=bioongo -X -v ON_ERROR_STOP=1 \
+     -v modo=ensayo -v usuario=<correo> \
+     -f migraciones/AAAA-MM-DD-asunto.sql
+```
+
+- `-X`: ignora `~/.psqlrc`.
+- `-v ON_ERROR_STOP=1`: el primer error detiene psql; la transacción abierta se
+  aborta sola y nada queda a medias.
+- `-v modo=ensayo` corre todo (guardas, cambios y verificación) y termina en
+  `ROLLBACK`; `-v modo=real`, en `COMMIT`. **Sin `modo`, el script no corre**:
+  no hay valor por defecto que haga commit.
+- **Siempre primero el ensayo.** Se le muestra la salida a Claudio, y el real se
+  corre solo con su aprobación del comando.
+- `-v usuario=<correo>` va en el comando, nunca en el archivo.
+- **Ningún script ni comando de psql usa `\!`** (ni `\setenv`, `\o |`, `\copy …
+  program` u otra forma de ejecutar shell desde psql). psql corre con acceso total
+  y lee `~/.pgpass`; un `\!` saltaría las reglas `deny` de arriba. Antes de pedir
+  aprobación, el script se revisa con `grep -nE '\\!|\\o *\||program'`.
+
+### Esqueleto de un script nuevo
+
+Los meta-comandos `\if` son de psql: un script con este esqueleto ya no corre en
+el SQL Editor. Los archivados antes del 15-oct no cambian.
+
+```
+\if :{?modo} \else
+  DO $$ BEGIN RAISE EXCEPTION 'Falta -v modo=ensayo o -v modo=real'; END $$;
+\endif
+\if :{?usuario} \else
+  DO $$ BEGIN RAISE EXCEPTION 'Falta -v usuario=<correo>'; END $$;
+\endif
+SELECT :'modo' IN ('ensayo', 'real') AS modo_valido,
+       :'modo' = 'real'               AS es_real,
+       :'usuario' ~ '^[^@\s]+@[^@\s]+\.[a-z]+$' AS usuario_valido \gset
+\if :modo_valido \else
+  DO $$ BEGIN RAISE EXCEPTION 'modo debe ser ensayo o real'; END $$;
+\endif
+\if :usuario_valido \else
+  DO $$ BEGIN RAISE EXCEPTION 'usuario no parece un correo'; END $$;
+\endif
+
+BEGIN;
+-- El usuario de la sesión para toda la transacción: fn_bitacora, los espejos
+-- (archivado_por) y fn_firmante_sesion lo leen de aquí, así que ningún asiento
+-- sale como sql_directo. canal = psql lo distingue de una sesión de la app.
+SELECT set_config('request.jwt.claims',
+                  json_build_object('email', :'usuario', 'canal', 'psql')::text, true);
+
+-- … guardas, cambios, asientos manuales (usuario = fn_firmante_sesion(),
+--     origen 'migracion', metadata con "canal": "psql") y verificación con RAISE …
+
+\if :es_real
+  COMMIT;
+  \echo '== REAL: COMMIT =='
+\else
+  ROLLBACK;
+  \echo '== ENSAYO: ROLLBACK, no quedó nada =='
+\endif
+```
+
+Probado contra producción el 15-oct-2026 con un script de solo lectura: sin
+`modo`, se detiene en la primera guarda con código de salida 3 y sin abrir
+transacción; con `modo=ensayo`, `fn_firmante_sesion()` devuelve el usuario
+pasado, `canal` = `psql`, termina en `ROLLBACK` y, fuera de la transacción, los
+claims quedan vacíos (`set_config` local).
+
+Límite conocido: los asientos que escribe `trg_bitacora` no dicen si vinieron de
+psql o de la app. Los liga el asiento manual del script (origen `migracion`,
+`canal: psql`), que comparte el mismo `created_at` de la transacción.
+
+### Lecturas
+
+Las verificaciones de solo lectura van por MCP o por psql dentro de una
+transacción `read only`:
+
+```
+psql service=bioongo -X -v ON_ERROR_STOP=1 -A \
+  -c "begin transaction read only" -c "select …" -c "rollback"
+```
+
+Prueba de humo del 15-oct-2026 con ese comando: `postgres | 17.6 | on | 36`
+(usuario, versión del servidor, transacción de solo lectura, clientes; los 36
+cuadraron con el MCP).
+
+### Archivar
+
+Igual que antes: el archivo en esta carpeta es byte a byte lo que corrió en modo
+`real`, con la cabecera de lo ejecutado y lo verificado (salida del ensayo, salida
+del real y la verificación posterior).
 
 ## Renombrar un `codigo_cliente`
 
