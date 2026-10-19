@@ -149,9 +149,22 @@ cuadraron con el MCP).
 
 ### Archivar
 
-Igual que antes: el archivo en esta carpeta es byte a byte lo que corrió en modo
-`real`, con la cabecera de lo ejecutado y lo verificado (salida del ensayo, salida
-del real y la verificación posterior).
+**Regla desde el 19-oct-2026 (decisión de Claudio): el archivo de esta carpeta
+es byte a byte el que corrió en modo `real`, cabecera incluida, y no se toca
+después.**
+
+- El script se copia aquí, con su cabecera, ANTES del modo real, y el real se
+  corre desde aquí. La cabecera dice qué hace, cómo se probó (réplica, MCP) y la
+  salida del **ensayo**.
+- La salida del **real** y la verificación posterior por MCP van en el **mensaje
+  del commit** que lo archiva, con el md5 del archivo ejecutado. Así el md5 que
+  consta en el commit es el del archivo que está en el repo.
+- Antes del real se comprueba el md5 contra el aprobado
+  (`echo "<md5>  <archivo>" | md5sum -c -`).
+
+Los scripts archivados hasta el 14-oct-2026 siguen la regla anterior: la cabecera
+se reescribió después de correrlos con el resultado, y dicen el md5 de lo
+ejecutado («solo cambió esta cabecera»).
 
 ## Renombrar un `codigo_cliente`
 
@@ -182,6 +195,12 @@ columnas de `public` que guardan un código de cliente.
 | `transaccionalidad` | `codigo_cliente` |
 | `portafolios` | `codigo_cliente` |
 | `listas_coincidencias` | `codigo_cliente` |
+| `personas` | `codigo_ficha`, `codigo_kyc`, `codigo_pep`, `codigo_ips`, `codigo_ebr` |
+| `cuentas_ibkr` | `codigo_cliente` (el código de contrato de la cuenta) |
+
+Las dos últimas nacieron el 19-oct-2026 (`2026-10-16-persona-cuenta-bloque1-expand.sql`),
+también `DEFERRABLE INITIALLY IMMEDIATE`. Olvidar un puntero de `personas` en un
+renombre no pasa en silencio: la FK falla al comprobar (probado en la réplica).
 
 **Sin FK: el renombre NO las alcanza solo, y ninguna restricción avisa si se
 olvidan.**
@@ -190,6 +209,7 @@ olvidan.**
 |---|---|---|
 | `cliente_bloqueos` | `codigo_cliente` | **El bloqueo desaparece en silencio.** El IPS, el portafolio, la ficha y la bandeja buscan el bloqueo abierto por el código vigente; con el código viejo en la fila, el cliente renombrado opera como si nunca lo hubieran bloqueado. Es la tabla que más importa no olvidar. |
 | `firmas_cumplimiento` | `codigo_cliente` | Las firmas del cliente dejan de aparecer al buscarlas por su código. `entidad_id` apunta a ids (coincidencia o bloqueo), no al código: esa columna no se toca. |
+| `personas` | `codigo_reporte` | La persona sigue identificada con el código viejo, y la bitácora de `personas` (que se asienta por `codigo_reporte`) queda partida. Es el ID que la identifica: se renombra con el código individual. |
 
 Las dos nacieron sin FK a propósito (`2026-10-05-bloqueo-y-firma.sql`): son
 evidencia de cumplimiento y no deben poder borrarse en cascada ni impedir el
@@ -208,6 +228,8 @@ escribieron, y así debe ser.
 | `firmas_cumplimiento_historico` | `codigo_cliente` |
 | `documentos_expediente_historico` | `codigo_cliente` |
 | `documentos_expediente` | `codigo_cliente` (ver abajo) |
+| `personas_historico` | `codigo_reporte`, `codigo_ficha`, `codigo_kyc`, `codigo_pep`, `codigo_ips`, `codigo_ebr` |
+| `cuentas_ibkr_historico` | `codigo_cliente` |
 | `ebr_evaluaciones.entrada`, `snapshot` de los espejos | el jsonb de la fotografía |
 
 **`documentos_expediente` tampoco se renombra, y no puede.** El CHECK
