@@ -1,7 +1,7 @@
 -- ============================================================================
 -- base.sql · réplica PGlite · SOLO ESQUEMA de public, sin una fila de datos.
 -- Última migración incluida: 2026-10-21-pep-procedencia-cspfu6388.sql
--- Generado desde el catálogo de producción el 2026-10-21 09:31 (CDMX)
+-- Generado desde el catálogo de producción el 2026-10-21 10:19 (CDMX)
 -- con scripts/replica/generar-base.sql. No se edita a mano: se regenera.
 -- ============================================================================
 set check_function_bodies = off;
