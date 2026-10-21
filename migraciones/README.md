@@ -133,6 +133,16 @@ Límite conocido: los asientos que escribe `trg_bitacora` no dicen si vinieron d
 psql o de la app. Los liga el asiento manual del script (origen `migracion`,
 `canal: psql`), que comparte el mismo `created_at` de la transacción.
 
+### Réplica antes del ensayo
+
+Desde el 21-oct-2026 la réplica PGlite vive en el repo (`scripts/replica/`), no en
+el scratchpad: `npm run replica -- <script>`. `base.sql` es solo esquema de
+`public`, sin filas, generado desde el catálogo con `generar-base.sql` (solo
+lectura); su cabecera dice la última migración que incluye, y `correr.mjs` se niega
+a correr si hay una archivada más nueva. Se regenera después de cada real. Los
+datos de prueba van en `scripts/replica/datos/<nombre del script>`, sintéticos y
+sin nombres. El flujo completo está en el skill `migracion-segura`.
+
 ### Lecturas
 
 Las verificaciones de solo lectura van por MCP o por psql dentro de una
