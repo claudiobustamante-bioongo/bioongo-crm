@@ -96,7 +96,14 @@ let ok = true;
 const A = await huella();
 
 // 1 · Ensayo
-await db.exec(envolver('rollback'));
+try {
+  await db.exec(envolver('rollback'));
+} catch (e) {
+  await db.exec('rollback').catch(() => {});
+  console.log(`✗ ensayo se detuvo: ${e.message}`);
+  console.log(`  (base ${(await huella()) === A ? 'sin rastro' : 'CAMBIADA'}; no se sigue con el real)`);
+  process.exit(1);
+}
 const ensayo = (await huella()) === A;
 console.log(`${ensayo ? '✓' : '✗'} ensayo (todo + ROLLBACK): ${ensayo ? 'sin rastro' : 'CAMBIÓ la base'}`);
 ok &&= ensayo;
