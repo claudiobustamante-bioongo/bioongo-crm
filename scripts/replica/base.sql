@@ -1,7 +1,7 @@
 -- ============================================================================
 -- base.sql · réplica PGlite · SOLO ESQUEMA de public, sin una fila de datos.
 -- Última migración incluida: 2026-10-22-motivo-baja-cspmu1089.sql
--- Generado desde el catálogo de producción el 2026-10-22 09:17 (CDMX)
+-- Generado desde el catálogo de producción el 2026-10-22 09:42 (CDMX)
 -- con scripts/replica/generar-base.sql. No se edita a mano: se regenera.
 -- ============================================================================
 set check_function_bodies = off;
@@ -163,26 +163,14 @@ begin
   if (tg_op = 'UPDATE') and (to_jsonb(old) is not distinct from to_jsonb(new)) then
     return new;
   end if;
-
-  v_usuario := coalesce(
-    nullif(current_setting('request.jwt.claims', true), '')::jsonb ->> 'email',
-    'sql_directo'
-  );
-
-  -- Qué cambió. En DELETE queda null: no hay `new` contra qué comparar.
-  -- No se excluye created_at como en fn_bitacora: si alguien lo movió, se ve.
+  v_usuario := coalesce(nullif(current_setting('request.jwt.claims', true), '')::jsonb ->> 'email', 'sql_directo');
   if (tg_op = 'UPDATE') then
-    select array_agg(nuevo.key order by nuevo.key)
-      into v_campos
+    select array_agg(nuevo.key order by nuevo.key) into v_campos
       from jsonb_each_text(to_jsonb(new)) as nuevo(key, value)
      where nuevo.value is distinct from (to_jsonb(old) ->> nuevo.key);
   end if;
-
-  select coalesce(max(version), 0) + 1
-    into v_version
-    from perfil_riesgo_historico
-   where codigo_cliente = old.codigo_cliente;
-
+  select coalesce(max(version), 0) + 1 into v_version
+    from perfil_riesgo_historico where codigo_cliente = old.codigo_cliente;
   insert into perfil_riesgo_historico (
     version, archivado_por, operacion, campos_cambiados, snapshot,
     id, codigo_cliente, objetivo_inversion, ganancia_deseada, horizonte,
@@ -193,7 +181,7 @@ begin
     otras_deudas, fase, tolerancia_puntos, tolerancia_nivel, capacidad_puntos,
     capacidad_nivel, puntuacion_ponderada, perfil_solicitado_cliente,
     bitacora_calculo, fecha_calculo, tiene_ahorros, comentario_asesor,
-    perfil_ajustado_por, fecha_ajuste, perfil_ajustado, ajustado_por
+    perfil_ajustado_por, fecha_ajuste, perfil_ajustado, ajustado_por, persona_id
   ) values (
     v_version, v_usuario, lower(tg_op), v_campos, to_jsonb(old),
     old.id, old.codigo_cliente, old.objetivo_inversion, old.ganancia_deseada,
@@ -206,12 +194,9 @@ begin
     old.capacidad_puntos, old.capacidad_nivel, old.puntuacion_ponderada,
     old.perfil_solicitado_cliente, old.bitacora_calculo, old.fecha_calculo,
     old.tiene_ahorros, old.comentario_asesor, old.perfil_ajustado_por,
-    old.fecha_ajuste, old.perfil_ajustado, old.ajustado_por
+    old.fecha_ajuste, old.perfil_ajustado, old.ajustado_por, old.persona_id
   );
-
-  if (tg_op = 'DELETE') then
-    return old;
-  end if;
+  if (tg_op = 'DELETE') then return old; end if;
   return new;
 end;
 $function$
@@ -232,10 +217,15 @@ begin
   end if;
   select coalesce(max(version), 0) + 1 into v_version from personas_historico where id = old.id;
   insert into personas_historico (version, archivado_por, operacion, campos_cambiados, snapshot,
-    id, codigo_reporte, codigo_ficha, codigo_kyc, codigo_pep, codigo_ips, codigo_ebr, nota, creado_en, creado_por)
+    id, codigo_reporte, codigo_ficha, codigo_kyc, codigo_pep, codigo_ips, codigo_ebr, nota, creado_en, creado_por,
+    nombre, apellido_paterno, apellido_materno, genero, fecha_nacimiento, rfc, curp, estado_civil, correo, celular,
+    grado_estudios, ocupacion, ingreso_neto_mensual, ahorros_aprox, identidad_copiada_en)
   values (v_version, v_usuario, lower(tg_op), v_campos, to_jsonb(old),
     old.id, old.codigo_reporte, old.codigo_ficha, old.codigo_kyc, old.codigo_pep, old.codigo_ips, old.codigo_ebr,
-    old.nota, old.creado_en, old.creado_por);
+    old.nota, old.creado_en, old.creado_por,
+    old.nombre, old.apellido_paterno, old.apellido_materno, old.genero, old.fecha_nacimiento, old.rfc, old.curp,
+    old.estado_civil, old.correo, old.celular, old.grado_estudios, old.ocupacion, old.ingreso_neto_mensual,
+    old.ahorros_aprox, old.identidad_copiada_en);
   if (tg_op = 'DELETE') then return old; end if;
   return new;
 end $function$
@@ -634,7 +624,9 @@ create table public.beneficiarios (
   lugar_nacimiento text,
   respuestas_completas jsonb,
   created_at timestamp with time zone default now(),
-  persona_id uuid
+  beneficiario_persona_id uuid,
+  persona_id uuid,
+  cuenta_ibkr text
 );
 create table public.bitacora (
   id uuid default gen_random_uuid() not null,
@@ -841,7 +833,8 @@ create table public.ebr_evaluaciones (
   override_source text default 'automatic'::text not null,
   elaboro text not null,
   revisa_autoriza text not null,
-  created_at timestamp with time zone default now() not null
+  created_at timestamp with time zone default now() not null,
+  persona_id uuid
 );
 create table public.firmas_cumplimiento (
   id uuid default gen_random_uuid() not null,
@@ -901,7 +894,9 @@ create table public.kyc_detalle (
   respuestas_completas jsonb,
   fecha_kyc timestamp with time zone,
   created_at timestamp with time zone default now(),
-  entidad_federativa_pb text
+  entidad_federativa_pb text,
+  persona_id uuid,
+  no_vigente_motivo text
 );
 create table public.listas_coincidencias (
   id uuid default gen_random_uuid() not null,
@@ -963,7 +958,9 @@ create table public.pep_listas (
   familiar_pep_nacional boolean default false,
   familiar_pep_extranjero boolean default false,
   pep_declaracion_fecha date,
-  pep_declaracion_fuente text
+  pep_declaracion_fuente text,
+  persona_id uuid,
+  no_vigente_motivo text
 );
 create table public.perfil_riesgo (
   id uuid default gen_random_uuid() not null,
@@ -1002,7 +999,8 @@ create table public.perfil_riesgo (
   perfil_ajustado_por text,
   fecha_ajuste timestamp with time zone,
   perfil_ajustado text,
-  ajustado_por text
+  ajustado_por text,
+  persona_id uuid
 );
 create table public.perfil_riesgo_historico (
   historico_id uuid default gen_random_uuid() not null,
@@ -1048,7 +1046,8 @@ create table public.perfil_riesgo_historico (
   perfil_ajustado_por text,
   fecha_ajuste timestamp with time zone,
   perfil_ajustado text,
-  ajustado_por text
+  ajustado_por text,
+  persona_id uuid
 );
 create table public.personas (
   id uuid default gen_random_uuid() not null,
@@ -1060,7 +1059,22 @@ create table public.personas (
   codigo_ebr text,
   nota text,
   creado_en timestamp with time zone default now() not null,
-  creado_por text default COALESCE(((NULLIF(current_setting('request.jwt.claims'::text, true), ''::text))::jsonb ->> 'email'::text), 'sql_directo'::text) not null
+  creado_por text default COALESCE(((NULLIF(current_setting('request.jwt.claims'::text, true), ''::text))::jsonb ->> 'email'::text), 'sql_directo'::text) not null,
+  nombre text,
+  apellido_paterno text,
+  apellido_materno text,
+  genero text,
+  fecha_nacimiento date,
+  rfc text,
+  curp text,
+  estado_civil text,
+  correo text,
+  celular text,
+  grado_estudios text,
+  ocupacion text,
+  ingreso_neto_mensual numeric,
+  ahorros_aprox numeric,
+  identidad_copiada_en timestamp with time zone
 );
 create table public.personas_historico (
   historico_id uuid default gen_random_uuid() not null,
@@ -1079,7 +1093,22 @@ create table public.personas_historico (
   codigo_ebr text,
   nota text,
   creado_en timestamp with time zone,
-  creado_por text
+  creado_por text,
+  nombre text,
+  apellido_paterno text,
+  apellido_materno text,
+  genero text,
+  fecha_nacimiento date,
+  rfc text,
+  curp text,
+  estado_civil text,
+  correo text,
+  celular text,
+  grado_estudios text,
+  ocupacion text,
+  ingreso_neto_mensual numeric,
+  ahorros_aprox numeric,
+  identidad_copiada_en timestamp with time zone
 );
 create table public.portafolios (
   id uuid default gen_random_uuid() not null,
@@ -1118,7 +1147,9 @@ create table public.propietario_real (
   celular text,
   domicilio_completo text,
   respuestas_completas jsonb,
-  created_at timestamp with time zone default now()
+  created_at timestamp with time zone default now(),
+  persona_id uuid,
+  cuenta_ibkr text
 );
 create table public.transaccionalidad (
   id uuid default gen_random_uuid() not null,
@@ -1130,9 +1161,11 @@ create table public.transaccionalidad (
   rango_deposito_mensual text,
   rango_retiro_mensual text,
   fecha_declaracion date,
-  created_at timestamp with time zone default now()
+  created_at timestamp with time zone default now(),
+  cuenta_ibkr text
 );
 alter table beneficiarios add constraint beneficiarios_pkey PRIMARY KEY (id);
+alter table beneficiarios add constraint beneficiarios_un_dueno CHECK (((persona_id IS NULL) OR (cuenta_ibkr IS NULL)));
 alter table bitacora add constraint bitacora_pkey PRIMARY KEY (id);
 alter table cliente_bloqueos_historico add constraint bloqueos_historico_version_unica UNIQUE (id, version);
 alter table cliente_bloqueos_historico add constraint cliente_bloqueos_historico_operacion_check CHECK ((operacion = ANY (ARRAY['update'::text, 'delete'::text])));
@@ -1206,6 +1239,8 @@ alter table firmas_cumplimiento add constraint firmas_levantamiento_asesor_autor
 alter table firmas_cumplimiento add constraint firmas_rol_valido CHECK ((rol = ANY (ARRAY['asesor'::text, 'oficial_cumplimiento'::text])));
 alter table kyc_detalle add constraint kyc_detalle_codigo_cliente_key UNIQUE (codigo_cliente);
 alter table kyc_detalle add constraint kyc_detalle_pkey PRIMARY KEY (id);
+alter table kyc_detalle add constraint kyc_no_vigente_lleno CHECK (((no_vigente_motivo IS NULL) OR (btrim(no_vigente_motivo) <> ''::text)));
+alter table kyc_detalle add constraint kyc_vigente_o_persona CHECK (((no_vigente_motivo IS NULL) OR (persona_id IS NULL)));
 alter table listas_coincidencias add constraint listas_coincidencias_estado_check CHECK ((estado = ANY (ARRAY['pendiente'::text, 'confirmada'::text, 'descartada'::text])));
 alter table listas_coincidencias add constraint listas_coincidencias_pkey PRIMARY KEY (id);
 alter table listas_coincidencias add constraint listas_coincidencias_tipo_match_check CHECK ((tipo_match = ANY (ARRAY['rfc_exacto'::text, 'curp_exacto'::text, 'nombre_exacto'::text])));
@@ -1213,6 +1248,8 @@ alter table listas_control add constraint listas_control_pkey PRIMARY KEY (id);
 alter table listas_control add constraint listas_control_tipo_check CHECK ((tipo = ANY (ARRAY['LPB'::text, 'PEP_NACIONAL'::text, 'OFAC'::text, 'SAT_69B'::text, 'ONU'::text])));
 alter table listas_registros add constraint listas_registros_pkey PRIMARY KEY (id);
 alter table pep_listas add constraint pep_listas_pkey PRIMARY KEY (id);
+alter table pep_listas add constraint pep_no_vigente_lleno CHECK (((no_vigente_motivo IS NULL) OR (btrim(no_vigente_motivo) <> ''::text)));
+alter table pep_listas add constraint pep_vigente_o_persona CHECK (((no_vigente_motivo IS NULL) OR (persona_id IS NULL)));
 alter table perfil_riesgo_historico add constraint perfil_riesgo_historico_operacion_check CHECK ((operacion = ANY (ARRAY['update'::text, 'delete'::text])));
 alter table perfil_riesgo_historico add constraint perfil_riesgo_historico_pkey PRIMARY KEY (historico_id);
 alter table perfil_riesgo_historico add constraint perfil_riesgo_historico_version_unica UNIQUE (codigo_cliente, version);
@@ -1234,9 +1271,12 @@ alter table personas add constraint personas_pkey PRIMARY KEY (id);
 alter table portafolios add constraint portafolios_pkey PRIMARY KEY (id);
 alter table portafolios add constraint portafolios_universo_check CHECK ((universo = ANY (ARRAY['UCITS'::text, 'EEUU'::text])));
 alter table propietario_real add constraint propietario_real_pkey PRIMARY KEY (id);
+alter table propietario_real add constraint propietario_un_dueno CHECK (((persona_id IS NULL) OR (cuenta_ibkr IS NULL)));
 alter table transaccionalidad add constraint transaccionalidad_cliente_fecha_key UNIQUE (codigo_cliente, fecha_declaracion);
 alter table transaccionalidad add constraint transaccionalidad_pkey PRIMARY KEY (id);
+alter table beneficiarios add constraint beneficiarios_beneficiario_persona_id_fkey FOREIGN KEY (beneficiario_persona_id) REFERENCES personas(id) DEFERRABLE;
 alter table beneficiarios add constraint beneficiarios_codigo_cliente_fkey FOREIGN KEY (codigo_cliente) REFERENCES clientes(codigo_cliente) DEFERRABLE;
+alter table beneficiarios add constraint beneficiarios_cuenta_ibkr_fkey FOREIGN KEY (cuenta_ibkr) REFERENCES cuentas_ibkr(cuenta_ibkr) DEFERRABLE;
 alter table beneficiarios add constraint beneficiarios_persona_id_fkey FOREIGN KEY (persona_id) REFERENCES personas(id) DEFERRABLE;
 alter table cliente_bloqueos add constraint cliente_bloqueos_coincidencia_id_fkey FOREIGN KEY (coincidencia_id) REFERENCES listas_coincidencias(id);
 alter table cliente_bloqueos add constraint cliente_bloqueos_firma_id_fkey FOREIGN KEY (firma_id) REFERENCES firmas_cumplimiento(id);
@@ -1246,13 +1286,17 @@ alter table cuenta_titulares add constraint cuenta_titulares_persona_id_fkey FOR
 alter table cuentas_ibkr add constraint cuentas_ibkr_codigo_cliente_fkey FOREIGN KEY (codigo_cliente) REFERENCES clientes(codigo_cliente) DEFERRABLE;
 alter table documentos_expediente add constraint documentos_expediente_reemplaza_a_fkey FOREIGN KEY (reemplaza_a) REFERENCES documentos_expediente(id);
 alter table ebr_evaluaciones add constraint ebr_evaluaciones_codigo_cliente_fkey FOREIGN KEY (codigo_cliente) REFERENCES clientes(codigo_cliente) DEFERRABLE;
+alter table ebr_evaluaciones add constraint ebr_evaluaciones_persona_id_fkey FOREIGN KEY (persona_id) REFERENCES personas(id) DEFERRABLE;
 alter table kyc_detalle add constraint kyc_detalle_codigo_cliente_fkey FOREIGN KEY (codigo_cliente) REFERENCES clientes(codigo_cliente) DEFERRABLE;
+alter table kyc_detalle add constraint kyc_detalle_persona_id_fkey FOREIGN KEY (persona_id) REFERENCES personas(id) DEFERRABLE;
 alter table listas_coincidencias add constraint listas_coincidencias_codigo_cliente_fkey FOREIGN KEY (codigo_cliente) REFERENCES clientes(codigo_cliente) DEFERRABLE;
 alter table listas_coincidencias add constraint listas_coincidencias_lista_id_fkey FOREIGN KEY (lista_id) REFERENCES listas_control(id);
 alter table listas_coincidencias add constraint listas_coincidencias_registro_id_fkey FOREIGN KEY (registro_id) REFERENCES listas_registros(id);
 alter table listas_registros add constraint listas_registros_lista_id_fkey FOREIGN KEY (lista_id) REFERENCES listas_control(id) ON DELETE CASCADE;
 alter table pep_listas add constraint pep_listas_codigo_cliente_fkey FOREIGN KEY (codigo_cliente) REFERENCES clientes(codigo_cliente) DEFERRABLE;
+alter table pep_listas add constraint pep_listas_persona_id_fkey FOREIGN KEY (persona_id) REFERENCES personas(id) DEFERRABLE;
 alter table perfil_riesgo add constraint perfil_riesgo_codigo_cliente_fkey FOREIGN KEY (codigo_cliente) REFERENCES clientes(codigo_cliente) DEFERRABLE;
+alter table perfil_riesgo add constraint perfil_riesgo_persona_id_fkey FOREIGN KEY (persona_id) REFERENCES personas(id) DEFERRABLE;
 alter table personas add constraint personas_codigo_ebr_fkey FOREIGN KEY (codigo_ebr) REFERENCES clientes(codigo_cliente) DEFERRABLE;
 alter table personas add constraint personas_codigo_ficha_fkey FOREIGN KEY (codigo_ficha) REFERENCES clientes(codigo_cliente) DEFERRABLE;
 alter table personas add constraint personas_codigo_ips_fkey FOREIGN KEY (codigo_ips) REFERENCES clientes(codigo_cliente) DEFERRABLE;
@@ -1260,17 +1304,24 @@ alter table personas add constraint personas_codigo_kyc_fkey FOREIGN KEY (codigo
 alter table personas add constraint personas_codigo_pep_fkey FOREIGN KEY (codigo_pep) REFERENCES clientes(codigo_cliente) DEFERRABLE;
 alter table portafolios add constraint portafolios_codigo_cliente_fkey FOREIGN KEY (codigo_cliente) REFERENCES clientes(codigo_cliente) DEFERRABLE;
 alter table propietario_real add constraint propietario_real_codigo_cliente_fkey FOREIGN KEY (codigo_cliente) REFERENCES clientes(codigo_cliente) DEFERRABLE;
+alter table propietario_real add constraint propietario_real_cuenta_ibkr_fkey FOREIGN KEY (cuenta_ibkr) REFERENCES cuentas_ibkr(cuenta_ibkr) DEFERRABLE;
+alter table propietario_real add constraint propietario_real_persona_id_fkey FOREIGN KEY (persona_id) REFERENCES personas(id) DEFERRABLE;
 alter table transaccionalidad add constraint transaccionalidad_codigo_cliente_fkey FOREIGN KEY (codigo_cliente) REFERENCES clientes(codigo_cliente) DEFERRABLE;
+alter table transaccionalidad add constraint transaccionalidad_cuenta_ibkr_fkey FOREIGN KEY (cuenta_ibkr) REFERENCES cuentas_ibkr(cuenta_ibkr) DEFERRABLE;
 CREATE INDEX bitacora_entidad_idx ON public.bitacora USING btree (entidad, entidad_id, created_at DESC);
 CREATE INDEX bitacora_fecha_idx ON public.bitacora USING btree (created_at DESC);
 CREATE INDEX ebr_evaluaciones_cliente_fecha_idx ON public.ebr_evaluaciones USING btree (codigo_cliente, fecha_evaluacion DESC);
-CREATE INDEX idx_beneficiarios_persona ON public.beneficiarios USING btree (persona_id) WHERE (persona_id IS NOT NULL);
+CREATE INDEX idx_beneficiarios_beneficiario_persona ON public.beneficiarios USING btree (beneficiario_persona_id) WHERE (beneficiario_persona_id IS NOT NULL);
+CREATE INDEX idx_beneficiarios_dueno ON public.beneficiarios USING btree (persona_id) WHERE (persona_id IS NOT NULL);
 CREATE INDEX idx_bloqueos_coincidencia ON public.cliente_bloqueos USING btree (coincidencia_id);
 CREATE INDEX idx_cuenta_titulares_persona ON public.cuenta_titulares USING btree (persona_id);
 CREATE INDEX idx_documentos_cliente_tipo ON public.documentos_expediente USING btree (codigo_cliente, tipo, created_at DESC);
+CREATE INDEX idx_ebr_persona_fecha ON public.ebr_evaluaciones USING btree (persona_id, fecha_evaluacion DESC) WHERE (persona_id IS NOT NULL);
 CREATE INDEX idx_firmas_cliente ON public.firmas_cumplimiento USING btree (codigo_cliente);
 CREATE INDEX idx_firmas_entidad ON public.firmas_cumplimiento USING btree (entidad, entidad_id);
 CREATE INDEX idx_prh_archivado ON public.perfil_riesgo_historico USING btree (archivado_en DESC);
+CREATE INDEX idx_propietario_persona ON public.propietario_real USING btree (persona_id) WHERE (persona_id IS NOT NULL);
+CREATE INDEX idx_transaccionalidad_cuenta ON public.transaccionalidad USING btree (cuenta_ibkr);
 CREATE INDEX listas_coincidencias_cliente_idx ON public.listas_coincidencias USING btree (codigo_cliente, estado);
 CREATE INDEX listas_coincidencias_estado_idx ON public.listas_coincidencias USING btree (estado) WHERE (estado = 'pendiente'::text);
 CREATE INDEX listas_registros_lista_idx ON public.listas_registros USING btree (lista_id);
@@ -1279,6 +1330,9 @@ CREATE INDEX listas_registros_rfc_idx ON public.listas_registros USING btree (rf
 CREATE UNIQUE INDEX uq_bloqueo_abierto_por_cliente ON public.cliente_bloqueos USING btree (codigo_cliente) WHERE (levantado_en IS NULL);
 CREATE UNIQUE INDEX uq_cuenta_un_titular ON public.cuenta_titulares USING btree (cuenta_ibkr) WHERE (rol = 'titular'::text);
 CREATE UNIQUE INDEX uq_documentos_reemplazo_unico ON public.documentos_expediente USING btree (reemplaza_a) WHERE (reemplaza_a IS NOT NULL);
+CREATE UNIQUE INDEX uq_kyc_por_persona ON public.kyc_detalle USING btree (persona_id) WHERE (persona_id IS NOT NULL);
+CREATE UNIQUE INDEX uq_pep_por_persona ON public.pep_listas USING btree (persona_id) WHERE (persona_id IS NOT NULL);
+CREATE UNIQUE INDEX uq_perfil_por_persona ON public.perfil_riesgo USING btree (persona_id) WHERE (persona_id IS NOT NULL);
 CREATE TRIGGER trg_bitacora AFTER INSERT OR DELETE OR UPDATE ON public.beneficiarios FOR EACH ROW EXECUTE FUNCTION fn_bitacora();
 CREATE TRIGGER trg_archivar_bloqueos BEFORE DELETE OR UPDATE ON public.cliente_bloqueos FOR EACH ROW EXECUTE FUNCTION fn_archivar_bloqueos();
 CREATE TRIGGER trg_bitacora AFTER INSERT OR DELETE OR UPDATE ON public.cliente_bloqueos FOR EACH ROW EXECUTE FUNCTION fn_bitacora();
