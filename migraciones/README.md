@@ -12,7 +12,12 @@ es el **archivo de lo ya ejecutado**, no una cola de lo pendiente.
 
 Reglas de la carpeta:
 
-- Un archivo por script, nombrado `AAAA-MM-DD-asunto.sql`.
+- Un archivo por script, nombrado `AAAA-MM-DD-NN-asunto.sql` desde el 22-oct-2026,
+  con `NN` el orden de ejecución de ese día (contando los archivados ese día con el
+  formato viejo `AAAA-MM-DD-asunto.sql`, que no se renombran). Con dos scripts del
+  mismo día, el orden alfabético del formato viejo no era el de ejecución.
+- El asiento manual de bitácora del script lleva `metadata.script` con su nombre: es
+  como la base sabe cuál fue la última migración ejecutada (`scripts/replica/`).
 - La cabecera dice qué hizo, cuándo se ejecutó y **qué quedó verificado después**
   de correrlo. Un script archivado sin su resultado no permite reconstruir nada.
 - Se archiva lo que YA se corrió. Si un script se propuso y no se ejecutó, no va

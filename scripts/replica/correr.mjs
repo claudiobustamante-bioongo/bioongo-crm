@@ -12,7 +12,8 @@
 // Antes, comprueba que base.sql incluya la última migración archivada (sin contar
 // el script que se prueba); si no, hay que regenerarla.
 import { PGlite } from '@electric-sql/pglite';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -33,17 +34,26 @@ function fallar(msg) {
 }
 
 // --- base.sql al día -------------------------------------------------------------
+// Orden de ejecución = orden en que cada migración entró a git (se archiva justo
+// después de su real). Nunca por nombre: dos scripts del mismo día con el formato
+// viejo no se ordenan bien alfabéticamente.
 const base = readFileSync(join(aqui, 'base.sql'), 'utf8');
 const incluida = base.match(/^-- Última migración incluida: (\S+)/m)?.[1];
 if (!incluida) fallar('base.sql no dice qué migración incluye: regenerarla.');
-const archivadas = readdirSync(join(raiz, 'migraciones'))
-  .filter((f) => /^\d{4}-\d{2}-\d{2}-.+\.sql$/.test(f) && f !== basename(script))
-  .sort();
-const ultima = archivadas.at(-1);
-if (ultima > incluida) {
-  fallar(`base.sql incluye hasta ${incluida}, pero ya está archivada ${ultima}: regenerarla desde el catálogo (generar-base.sql).`);
+const ordenGit = [...new Set(
+  execFileSync('git', ['log', '--reverse', '--diff-filter=A', '--name-only', '--format=', '--', 'migraciones/'],
+               { cwd: raiz, encoding: 'utf8' })
+    .split('\n').map((s) => s.trim())
+    .filter((f) => /^migraciones\/\d{4}-\d{2}-\d{2}-.+\.sql$/.test(f))
+    .map((f) => f.slice('migraciones/'.length)),
+)];
+const posicion = ordenGit.indexOf(incluida);
+if (posicion < 0) fallar(`base.sql dice que incluye ${incluida}, pero esa migración no está archivada en git.`);
+const posteriores = ordenGit.slice(posicion + 1).filter((f) => f !== basename(script));
+if (posteriores.length) {
+  fallar(`base.sql incluye hasta ${incluida}, pero después se archivó ${posteriores.join(', ')}: regenerarla desde el catálogo (generar-base.sql).`);
 }
-console.log(`base.sql al día (incluye hasta ${incluida}).`);
+console.log(`base.sql al día (incluye hasta ${incluida}, por orden de git).`);
 
 // --- El cuerpo del script ------------------------------------------------------------
 const texto = readFileSync(script, 'utf8');

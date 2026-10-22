@@ -5,8 +5,10 @@
 --
 -- Solo lectura. Se corre así (pide permiso por la regla ask de psql):
 --   psql service=bioongo -X -A -t -v ON_ERROR_STOP=1 \
---        -v ultima="$(ls migraciones/*.sql | sort | tail -1 | xargs basename)" \
+--        -v ultima=<última migración ejecutada, si la bitácora aún no la registra> \
 --        -f scripts/replica/generar-base.sql -o scripts/replica/base.sql
+-- La última migración sale de la bitácora (metadata.script); -v ultima es solo
+-- el respaldo para cuando ningún script con nombre AAAA-MM-DD-NN la haya escrito.
 -- ===========================================================================
 \set QUIET on
 \if :{?ultima} \else
@@ -18,7 +20,17 @@ with ddl(orden, sub, linea) as (
   -- 0 · Cabecera
   select 0, '0', '-- ============================================================================'
   union all select 0, '1', '-- base.sql · réplica PGlite · SOLO ESQUEMA de public, sin una fila de datos.'
-  union all select 0, '2', '-- Última migración incluida: ' || :'ultima'
+  -- La última migración EJECUTADA: la del asiento manual más reciente con
+  -- metadata.script (scripts AAAA-MM-DD-NN-asunto.sql, desde el 22-oct-2026). Si no
+  -- hay ninguno, la que se pasa con -v ultima. Nunca por orden de nombre.
+  union all select 0, '2', '-- Última migración incluida: ' || coalesce(
+      (select b.metadata ->> 'script' from public.bitacora b
+        where b.origen = 'migracion' and b.metadata ->> 'script' ~ '^\d{4}-\d{2}-\d{2}-\d{2}-.+\.sql$'
+        order by b.created_at desc limit 1),
+      :'ultima')
+    || case when exists (select 1 from public.bitacora b where b.origen = 'migracion'
+                           and b.metadata ->> 'script' ~ '^\d{4}-\d{2}-\d{2}-\d{2}-.+\.sql$')
+            then ' (según la bitácora)' else ' (según -v ultima)' end
   union all select 0, '3', '-- Generado desde el catálogo de producción el ' || to_char(now() at time zone 'America/Mexico_City', 'YYYY-MM-DD HH24:MI') || ' (CDMX)'
   union all select 0, '4', '-- con scripts/replica/generar-base.sql. No se edita a mano: se regenera.'
   union all select 0, '5', '-- ============================================================================'
