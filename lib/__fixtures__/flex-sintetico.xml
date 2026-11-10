@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SINTÉTICO: cuentas, montos, nombres y alias inventados. Nunca un XML real de IBKR. -->
+<!-- Trampas a propósito: «&» sin escapar, un renglón LOT que repite la posición,
+     Cash Report por divisa además de BASE_SUMMARY, NAV con dos fechas (la última
+     no va al final), un toDate distinto y una cuenta sin BASE_SUMMARY. -->
+<FlexQueryResponse queryName="SINTETICO" type="AF">
+<FlexStatements count="5">
+<FlexStatement accountId="U0000001" fromDate="20261109" toDate="20261109" period="Custom" whenGenerated="20261110;080000">
+<AccountInformation accountId="U0000001" acctAlias="ALIAS PRIVADO" name="Relleno Uno" accountType="Individual" currency="MXN" dateOpened="20200110" dateFunded="20200115" />
+<ChangeInNAV accountId="U0000001" currency="MXN" fromDate="20261109" toDate="20261109" startingValue="100000" endingValue="108800" depositsWithdrawals="5000" mtm="3800" interest="0" dividends="0" twr="3.8" />
+<EquitySummaryInBase>
+<EquitySummaryByReportDateInBase accountId="U0000001" currency="MXN" reportDate="20261106" cash="1" stock="0" funds="0" total="1" />
+<EquitySummaryByReportDateInBase accountId="U0000001" currency="MXN" reportDate="20261109" cash="1000" stock="107750" funds="0" total="108800" />
+<EquitySummaryByReportDateInBase accountId="U0000001" currency="MXN" reportDate="20261107" cash="2" stock="0" funds="0" total="2" />
+</EquitySummaryInBase>
+<OpenPositions>
+<OpenPosition accountId="U0000001" currency="USD" fxRateToBase="18.5" assetCategory="STK" subCategory="ETF" symbol="VOO" description="VANGUARD S&P 500 ETF" conid="1001" position="10" markPrice="500" positionValue="5000" levelOfDetail="SUMMARY" />
+<OpenPosition accountId="U0000001" currency="USD" fxRateToBase="18.5" assetCategory="STK" subCategory="ETF" symbol="VOO" description="VANGUARD S&P 500 ETF" conid="1001" position="10" markPrice="500" positionValue="5000" levelOfDetail="LOT" />
+<OpenPosition accountId="U0000001" currency="MXN" fxRateToBase="1" assetCategory="STK" subCategory="ETF" symbol="NAFTRAC" description="ISHARES NAFTRAC" conid="1002" position="100" markPrice="60" positionValue="6000" levelOfDetail="SUMMARY" />
+<OpenPosition accountId="U0000001" currency="USD" fxRateToBase="18.5" assetCategory="OPT" subCategory="C" symbol="AAPL  261218C00200000" description="AAPL 18DEC26 200 C" conid="1003" position="1" markPrice="5" positionValue="500" levelOfDetail="SUMMARY" />
+</OpenPositions>
+<CashReport>
+<CashReportCurrency accountId="U0000001" currency="BASE_SUMMARY" endingCash="1200" endingSettledCash="1000" />
+<CashReportCurrency accountId="U0000001" currency="MXN" endingCash="800" endingSettledCash="700" />
+<CashReportCurrency accountId="U0000001" currency="USD" endingCash="20" endingSettledCash="10" />
+</CashReport>
+</FlexStatement>
+<FlexStatement accountId="U0000002" fromDate="20261109" toDate="20261109" period="Custom" whenGenerated="20261110;080000">
+<AccountInformation accountId="U0000002" acctAlias="OTRO ALIAS" name="Relleno Dos" accountType="Individual" currency="USD" dateOpened="20210301" dateFunded="20210305" />
+<EquitySummaryInBase>
+<EquitySummaryByReportDateInBase accountId="U0000002" currency="USD" reportDate="20261109" cash="500" stock="7300" funds="0" total="8000" />
+</EquitySummaryInBase>
+<OpenPositions>
+<OpenPosition accountId="U0000002" currency="USD" fxRateToBase="1" assetCategory="STK" subCategory="ETF" symbol="BND" description="VANGUARD TOTAL BOND MARKET" conid="2001" position="100" markPrice="72" positionValue="7200" levelOfDetail="SUMMARY" />
+<OpenPosition accountId="U0000002" currency="USD" fxRateToBase="1" assetCategory="STK" subCategory="COMMON" symbol="ZZUNK" description="ACCION FUERA DE CATALOGO" conid="2002" position="10" markPrice="10" positionValue="100" levelOfDetail="SUMMARY" />
+</OpenPositions>
+<CashReport>
+<CashReportCurrency accountId="U0000002" currency="BASE_SUMMARY" endingCash="500" endingSettledCash="500" />
+</CashReport>
+</FlexStatement>
+<FlexStatement accountId="U0000003" fromDate="20261109" toDate="20261109" period="Custom" whenGenerated="20261110;080000">
+<AccountInformation accountId="U0000003" acctAlias="" name="Relleno Tres" accountType="Individual" currency="MXN" dateOpened="20250101" dateFunded="" />
+<EquitySummaryInBase>
+<EquitySummaryByReportDateInBase accountId="U0000003" currency="MXN" reportDate="20261109" cash="0" stock="6000" funds="0" total="6000" />
+</EquitySummaryInBase>
+<OpenPositions>
+<OpenPosition accountId="U0000003" currency="MXN" fxRateToBase="1" assetCategory="STK" subCategory="ETF" symbol="NAFTRAC" description="ISHARES NAFTRAC" conid="1002" position="100" markPrice="60" positionValue="6000" levelOfDetail="SUMMARY" />
+</OpenPositions>
+</FlexStatement>
+<FlexStatement accountId="U0000004" fromDate="20261108" toDate="20261108" period="Custom" whenGenerated="20261110;080000">
+<AccountInformation accountId="U0000004" acctAlias="" name="Relleno Cuatro" accountType="Individual" currency="MXN" dateOpened="20250101" dateFunded="20250102" />
+<EquitySummaryInBase>
+<EquitySummaryByReportDateInBase accountId="U0000004" currency="MXN" reportDate="20261108" cash="10" stock="0" funds="0" total="10" />
+</EquitySummaryInBase>
+</FlexStatement>
+<FlexStatement accountId="U0000005" fromDate="20261109" toDate="20261109" period="Custom" whenGenerated="20261110;080000">
+<AccountInformation accountId="U0000005" acctAlias="" name="Relleno Cinco" accountType="Individual" currency="MXN" dateOpened="20250101" dateFunded="20250102" />
+<EquitySummaryInBase>
+<EquitySummaryByReportDateInBase accountId="U0000005" currency="MXN" reportDate="20261109" cash="300" stock="0" funds="0" total="300" />
+</EquitySummaryInBase>
+<CashReport>
+<CashReportCurrency accountId="U0000005" currency="MXN" endingCash="300" endingSettledCash="300" />
+</CashReport>
+</FlexStatement>
+</FlexStatements>
+</FlexQueryResponse>
