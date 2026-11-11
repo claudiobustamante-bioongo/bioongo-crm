@@ -17,13 +17,22 @@
  * lib/documentos-servidor.ts.
  */
 
-/** Espeja el CHECK documentos_tipo_valido. */
+/**
+ * Espeja el CHECK documentos_tipo_valido y la lista de fn_registrar_documento,
+ * ampliados el 11-nov-2026 (migraciones/2026-11-11-01-catalogo-y-checks.sql, D3).
+ */
 export const TIPOS_DOCUMENTO = [
   'carta_clasificacion',
   'identificacion',
   'comprobante_domicilio',
   'constancia_fiscal',
   'contrato',
+  'ips_firmado',
+  'constancia_pl03',
+  'expediente_apertura',
+  'aviso_cliente',
+  'evidencia_remediacion',
+  'otro',
 ] as const;
 export type TipoDocumento = (typeof TIPOS_DOCUMENTO)[number];
 
@@ -33,6 +42,12 @@ export const NOMBRE_TIPO_DOCUMENTO: Record<TipoDocumento, string> = {
   comprobante_domicilio: 'Comprobante de domicilio',
   constancia_fiscal: 'Constancia de situación fiscal',
   contrato: 'Contrato',
+  ips_firmado: 'IPS firmado',
+  constancia_pl03: 'Constancia PL-03',
+  expediente_apertura: 'Expediente de apertura',
+  aviso_cliente: 'Aviso al cliente',
+  evidencia_remediacion: 'Evidencia de remediación',
+  otro: 'Otro',
 };
 
 /** Espeja el CHECK documentos_tamano y el file_size_limit del bucket. */

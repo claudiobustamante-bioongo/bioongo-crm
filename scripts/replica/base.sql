@@ -1,7 +1,7 @@
 -- ============================================================================
 -- base.sql · réplica PGlite · SOLO ESQUEMA de public, sin una fila de datos.
--- Última migración incluida: 2026-11-10-01-ibkr-flex.sql (según la bitácora)
--- Generado desde el catálogo de producción el 2026-11-10 10:10 (CDMX)
+-- Última migración incluida: 2026-11-11-01-catalogo-y-checks.sql (según la bitácora)
+-- Generado desde el catálogo de producción el 2026-11-11 09:56 (CDMX)
 -- con scripts/replica/generar-base.sql. No se edita a mano: se regenera.
 -- ============================================================================
 set check_function_bodies = off;
@@ -561,8 +561,7 @@ begin
   if v_usuario is null then
     raise exception 'Sin sesión: archivar un documento exige un usuario autenticado.' using errcode = 'DX401';
   end if;
-  if p_tipo is null or p_tipo not in ('carta_clasificacion', 'identificacion', 'comprobante_domicilio',
-                                      'constancia_fiscal', 'contrato') then
+  if p_tipo is null or p_tipo not in ('carta_clasificacion', 'identificacion', 'comprobante_domicilio', 'constancia_fiscal', 'contrato', 'ips_firmado', 'constancia_pl03', 'expediente_apertura', 'aviso_cliente', 'evidencia_remediacion', 'otro') then
     raise exception 'Tipo de documento no válido.' using errcode = 'DX400';
   end if;
   if p_codigo_cliente is null or p_codigo_cliente !~ '^CSP[FM]U[0-9]{4}$' then
@@ -1433,14 +1432,16 @@ alter table beneficiarios add constraint beneficiarios_pkey PRIMARY KEY (id);
 alter table beneficiarios add constraint beneficiarios_un_dueno CHECK (((persona_id IS NULL) OR (cuenta_ibkr IS NULL)));
 alter table bitacora add constraint bitacora_pkey PRIMARY KEY (id);
 alter table catalogo_instrumentos add constraint catalogo_asset_forma CHECK (((asset_category ~ '^[A-Z]+$'::text) AND (asset_category <> 'OPT'::text)));
-alter table catalogo_instrumentos add constraint catalogo_clase_valida CHECK ((clase_activo = ANY (ARRAY['GOB_MX'::text, 'GOB_EXT'::text, 'GOB_EMERGENTE'::text, 'CORP_IG'::text, 'HIGH_YIELD'::text, 'ACC_BMV'::text, 'ACC_SIC'::text, 'CRIPTO'::text, 'MIXTO'::text, 'DERIVADO'::text, 'EFECTIVO'::text])));
+alter table catalogo_instrumentos add constraint catalogo_clase_valida CHECK ((clase_activo = ANY (ARRAY['GOB_MX'::text, 'GOB_EXT'::text, 'GOB_EMERGENTE'::text, 'CORP_IG'::text, 'HIGH_YIELD'::text, 'ACC_BMV'::text, 'ACC_SIC'::text, 'CRIPTO'::text, 'MIXTO'::text, 'DERIVADO'::text, 'EFECTIVO'::text, 'COMMODITY'::text, 'APALANCADO'::text])));
 alter table catalogo_instrumentos add constraint catalogo_cnbv_valida CHECK ((clasificacion_cnbv = ANY (ARRAY[101, 102, 103, 104, 105, 106, 109, 112, 113])));
 alter table catalogo_instrumentos add constraint catalogo_duracion_valida CHECK ((duracion_efectiva >= (0)::numeric));
+alter table catalogo_instrumentos add constraint catalogo_equivalente_duracion CHECK (((NOT es_equivalente_efectivo) OR ((duracion_efectiva IS NOT NULL) AND (duracion_efectiva <= (1)::numeric))));
 alter table catalogo_instrumentos add constraint catalogo_instrumentos_pkey PRIMARY KEY (id);
 alter table catalogo_instrumentos add constraint catalogo_instrumentos_ticker_key UNIQUE (ticker);
+alter table catalogo_instrumentos add constraint catalogo_no_elegibles CHECK (((clase_activo <> ALL (ARRAY['COMMODITY'::text, 'APALANCADO'::text, 'CRIPTO'::text, 'DERIVADO'::text])) OR (NOT elegible)));
 alter table catalogo_instrumentos add constraint catalogo_ticker_forma CHECK (((ticker = upper(btrim(ticker))) AND (ticker <> ''::text) AND (ticker <> ALL (ARRAY['EFECTIVO'::text, 'NAV_IBKR'::text]))));
 alter table catalogo_prorrateo add constraint catalogo_prorrateo_pkey PRIMARY KEY (id);
-alter table catalogo_prorrateo add constraint prorrateo_clase_valida CHECK ((clase_activo = ANY (ARRAY['GOB_MX'::text, 'GOB_EXT'::text, 'GOB_EMERGENTE'::text, 'CORP_IG'::text, 'HIGH_YIELD'::text, 'ACC_BMV'::text, 'ACC_SIC'::text, 'CRIPTO'::text, 'EFECTIVO'::text])));
+alter table catalogo_prorrateo add constraint prorrateo_clase_valida CHECK ((clase_activo = ANY (ARRAY['GOB_MX'::text, 'GOB_EXT'::text, 'GOB_EMERGENTE'::text, 'CORP_IG'::text, 'HIGH_YIELD'::text, 'ACC_BMV'::text, 'ACC_SIC'::text, 'CRIPTO'::text, 'EFECTIVO'::text, 'COMMODITY'::text, 'APALANCADO'::text])));
 alter table catalogo_prorrateo add constraint prorrateo_factor_valido CHECK (((factor > (0)::numeric) AND (factor <= (1)::numeric)));
 alter table catalogo_prorrateo add constraint prorrateo_unico UNIQUE (ticker, clase_activo);
 alter table cliente_bloqueos_historico add constraint bloqueos_historico_version_unica UNIQUE (id, version);
@@ -1488,12 +1489,12 @@ alter table documentos_expediente add constraint documentos_codigo_forma CHECK (
 alter table documentos_expediente add constraint documentos_expediente_pkey PRIMARY KEY (id);
 alter table documentos_expediente add constraint documentos_mime_pdf CHECK ((mime = 'application/pdf'::text));
 alter table documentos_expediente add constraint documentos_no_se_reemplaza_a_si CHECK ((reemplaza_a IS DISTINCT FROM id));
-alter table documentos_expediente add constraint documentos_ruta_forma CHECK (((ruta_storage ~ '^[a-z_]+/CSP[FM]U[0-9]{4}/([0-9]{4}-[0-9]{2}-[0-9]{2}|sin-fecha)_[0-9a-f]{12}\.pdf$'::text) AND (split_part(ruta_storage, '/'::text, 1) = tipo) AND (split_part(ruta_storage, '/'::text, 2) = codigo_cliente) AND ("substring"(ruta_storage, '_([0-9a-f]{12})\.pdf$'::text) = "left"(sha256, 12)) AND ((fecha_documento IS NULL) = (POSITION(('/sin-fecha_'::text) IN (ruta_storage)) > 0))));
+alter table documentos_expediente add constraint documentos_ruta_forma CHECK (((ruta_storage ~ '^[a-z][a-z0-9_]*/CSP[FM]U[0-9]{4}/([0-9]{4}-[0-9]{2}-[0-9]{2}|sin-fecha)_[0-9a-f]{12}\.pdf$'::text) AND (split_part(ruta_storage, '/'::text, 1) = tipo) AND (split_part(ruta_storage, '/'::text, 2) = codigo_cliente) AND ("substring"(ruta_storage, '_([0-9a-f]{12})\.pdf$'::text) = "left"(sha256, 12)) AND ((fecha_documento IS NULL) = (POSITION(('/sin-fecha_'::text) IN (ruta_storage)) > 0))));
 alter table documentos_expediente add constraint documentos_ruta_unica UNIQUE (ruta_storage);
 alter table documentos_expediente add constraint documentos_sha256_forma CHECK ((sha256 ~ '^[0-9a-f]{64}$'::text));
 alter table documentos_expediente add constraint documentos_subido_por_lleno CHECK ((btrim(subido_por) <> ''::text));
 alter table documentos_expediente add constraint documentos_tamano CHECK (((tamano_bytes >= 1) AND (tamano_bytes <= 4194304)));
-alter table documentos_expediente add constraint documentos_tipo_valido CHECK ((tipo = ANY (ARRAY['carta_clasificacion'::text, 'identificacion'::text, 'comprobante_domicilio'::text, 'constancia_fiscal'::text, 'contrato'::text])));
+alter table documentos_expediente add constraint documentos_tipo_valido CHECK ((tipo = ANY (ARRAY['carta_clasificacion'::text, 'identificacion'::text, 'comprobante_domicilio'::text, 'constancia_fiscal'::text, 'contrato'::text, 'ips_firmado'::text, 'constancia_pl03'::text, 'expediente_apertura'::text, 'aviso_cliente'::text, 'evidencia_remediacion'::text, 'otro'::text])));
 alter table ebr_evaluaciones add constraint ebr_evaluaciones_grado_riesgo_check CHECK ((grado_riesgo = ANY (ARRAY['BAJO'::text, 'ALTO'::text])));
 alter table ebr_evaluaciones add constraint ebr_evaluaciones_matriz_banda_check CHECK ((matriz_banda = ANY (ARRAY['Baja'::text, 'Media'::text, 'Alta'::text])));
 alter table ebr_evaluaciones add constraint ebr_evaluaciones_matriz_puntaje_total_check CHECK (((matriz_puntaje_total >= 43) AND (matriz_puntaje_total <= 130)));

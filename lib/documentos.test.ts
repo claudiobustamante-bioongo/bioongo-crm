@@ -25,6 +25,14 @@ const migracion = readFileSync(
   'utf8',
 );
 
+// Desde el 11-nov-2026 los tipos y la forma de la ruta los fija esta migración (D3):
+// el CHECK de tipo, la lista de fn_registrar_documento y documentos_ruta_forma. La
+// del 14-oct sigue mandando en el tamaño.
+const migracionTipos = readFileSync(
+  fileURLToPath(new URL('../migraciones/2026-11-11-01-catalogo-y-checks.sql', import.meta.url)),
+  'utf8',
+);
+
 const pdf = (relleno = 'contenido') => new TextEncoder().encode(`%PDF-1.7\n${relleno}\n%%EOF`);
 const HOY = '2026-10-15';
 const base = { codigo: 'CSPFU9001', tipo: 'identificacion', fecha: '', reemplazaA: '', hoy: HOY };
@@ -34,10 +42,17 @@ const base = { codigo: 'CSPFU9001', tipo: 'identificacion', fecha: '', reemplaza
 // ---------------------------------------------------------------------------
 
 test('TIPOS_DOCUMENTO es el espejo exacto del CHECK documentos_tipo_valido', () => {
-  const m = migracion.match(/documentos_tipo_valido check \(tipo in \(([\s\S]*?)\)\)/);
+  const m = migracionTipos.match(/documentos_tipo_valido check \(tipo in \(([\s\S]*?)\)\)/);
   assert.ok(m, 'el CHECK debe estar en la migración archivada');
   const delCheck = m[1].split(',').map((v) => v.trim().replace(/'/g, ''));
   assert.deepEqual([...TIPOS_DOCUMENTO].sort(), delCheck.sort());
+});
+
+test('TIPOS_DOCUMENTO es también la lista de fn_registrar_documento', () => {
+  const m = migracionTipos.match(/v_lista\s+constant text := 'p_tipo not in \(([^)]*)\)';/);
+  assert.ok(m, 'la lista nueva de la función debe estar en la migración archivada');
+  const deLaFuncion = [...m[1].matchAll(/''([a-z_0-9]+)''/g)].map((x) => x[1]);
+  assert.deepEqual([...TIPOS_DOCUMENTO].sort(), deLaFuncion.sort());
 });
 
 test('el tope de 4 MB es el del CHECK documentos_tamano y el del bucket', () => {
@@ -48,7 +63,8 @@ test('el tope de 4 MB es el del CHECK documentos_tamano y el del bucket', () => 
 });
 
 test('rutaStorage cumple la forma del CHECK documentos_ruta_forma', () => {
-  const m = migracion.match(/ruta_storage ~ '([^']+)'/);
+  // La forma vigente es la del 11-nov-2026 (el tipo puede llevar dígitos: constancia_pl03).
+  const m = migracionTipos.match(/ruta_storage ~ '([^']+)'/);
   assert.ok(m);
   const forma = new RegExp(m[1]);
   const h = sha256Hex(pdf());
