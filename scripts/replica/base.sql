@@ -1,7 +1,7 @@
 -- ============================================================================
 -- base.sql · réplica PGlite · SOLO ESQUEMA de public, sin una fila de datos.
--- Última migración incluida: 2026-11-12-01-parametros-ips.sql (según la bitácora)
--- Generado desde el catálogo de producción el 2026-11-12 10:15 (CDMX)
+-- Última migración incluida: 2026-11-12-02-catalogo-alta-motor.sql (según la bitácora)
+-- Generado desde el catálogo de producción el 2026-11-12 10:24 (CDMX)
 -- con scripts/replica/generar-base.sql. No se edita a mano: se regenera.
 -- ============================================================================
 set check_function_bodies = off;

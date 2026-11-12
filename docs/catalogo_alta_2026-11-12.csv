@@ -1,0 +1,13 @@
+ticker,descripcion,asset_category,sub_category,clasificacion_cnbv,clase_activo,es_equivalente_efectivo,elegible,duracion_efectiva,nota,verificado_en
+CNDX,ISHARES NASDAQ 100 UCITS ETF,STK,ETF,113,ACC_SIC,false,true,,Universo del motor; clase por emisor (no mexicanas).,2026-11-12
+CSPX,ISHARES CORE S&P 500 UCITS ETF,STK,ETF,113,ACC_SIC,false,true,,Universo del motor; clase por emisor (no mexicanas).,2026-11-12
+EIMI,ISHARES CORE MSCI EM IMI UCITS ETF,STK,ETF,113,ACC_SIC,false,true,,Emergentes; incluye una fracción menor de emisoras mexicanas sin prorratear.,2026-11-12
+EWW,ISHARES MSCI MEXICO ETF,STK,ETF,113,ACC_BMV,false,true,,"Cotiza en NYSE en USD, pero sus emisoras son mexicanas: ACC_BMV por emisor (decisión del Asesor 11-nov-2026).",2026-11-12
+IDTP,ISHARES USD TIPS UCITS ETF,STK,ETF,113,GOB_EXT,false,true,6.55,Duración efectiva al 2026-09-09. En el portafolio del motor de un cliente vigente.,2026-11-12
+IHYA,ISHARES USD HIGH YIELD CORP BOND UCITS ETF ACC,STK,ETF,113,HIGH_YIELD,false,true,,Universo UCITS del motor.,2026-11-12
+IUIT,ISHARES S&P 500 INFORMATION TECHNOLOGY SECTOR UCITS ETF,STK,ETF,113,ACC_SIC,false,true,,Antes «satélite de tecnología» en el motor; para cumplimiento es ACC_SIC.,2026-11-12
+IWDA,ISHARES CORE MSCI WORLD UCITS ETF,STK,ETF,113,ACC_SIC,false,true,,Universo UCITS del motor.,2026-11-12
+QQQ,INVESCO QQQ TRUST,STK,ETF,113,ACC_SIC,false,true,,Universo del motor; clase por emisor (no mexicanas).,2026-11-12
+QQQM,INVESCO NASDAQ 100 ETF,STK,ETF,113,ACC_SIC,false,true,,Universo del motor; clase por emisor (no mexicanas).,2026-11-12
+VEA,VANGUARD FTSE DEVELOPED MARKETS ETF,STK,ETF,113,ACC_SIC,false,true,,Universo del motor; clase por emisor (no mexicanas).,2026-11-12
+VTV,VANGUARD VALUE ETF,STK,ETF,113,ACC_SIC,false,true,,Universo del motor; clase por emisor (no mexicanas).,2026-11-12

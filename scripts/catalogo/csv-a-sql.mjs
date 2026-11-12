@@ -1,6 +1,9 @@
 // Genera el bloque de carga del catálogo (INSERT … VALUES) desde los CSV de docs/.
 //
-//   node scripts/catalogo/csv-a-sql.mjs [instrumentos.csv] [prorrateo.csv]
+//   node scripts/catalogo/csv-a-sql.mjs [instrumentos.csv] [prorrateo.csv | -]
+//
+// Con «-» en lugar del CSV de prorrateo (una alta sin MIXTO), no se emite el
+// INSERT del prorrateo y _esperado lleva prorrateo = 0 y huella_prorrateo NULL.
 //
 // Imprime SQL a la salida estándar: los dos INSERT y una tabla temporal _esperado
 // con los conteos y la HUELLA del contenido (md5 de un texto canónico por
@@ -59,7 +62,11 @@ const fecha = (v) => {
 const porBytes = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 
 const ins = leerCsv(resolve(argI)).sort((a, b) => porBytes(a.ticker, b.ticker));
-const pro = leerCsv(resolve(argP)).sort((a, b) => porBytes(a.ticker, b.ticker) || porBytes(a.clase_activo, b.clase_activo));
+const sinProrrateo = argP === '-';
+const pro = sinProrrateo
+  ? []
+  : leerCsv(resolve(argP)).sort((a, b) => porBytes(a.ticker, b.ticker) || porBytes(a.clase_activo, b.clase_activo));
+if (!sinProrrateo && pro.length === 0) throw new Error(`${argP}: sin renglones; para una alta sin prorrateo usar «-»`);
 if (new Set(ins.map((r) => r.ticker)).size !== ins.length) throw new Error('ticker repetido en instrumentos');
 
 // Texto canónico: el mismo que arma la migración con concat_ws('|', coalesce(...)).
@@ -72,7 +79,9 @@ const canonP = pro.map((r) => [r.ticker, r.clase_activo, Number(r.factor).toFixe
 
 const salida = [];
 salida.push(`-- Generado por scripts/catalogo/csv-a-sql.mjs desde ${argI} (md5 ${md5(readFileSync(argI, 'utf8'))})`);
-salida.push(`-- y ${argP} (md5 ${md5(readFileSync(argP, 'utf8'))}). No se edita a mano: se regenera.`);
+salida.push(sinProrrateo
+  ? '-- sin prorrateo. No se edita a mano: se regenera.'
+  : `-- y ${argP} (md5 ${md5(readFileSync(argP, 'utf8'))}). No se edita a mano: se regenera.`);
 salida.push('insert into public.catalogo_instrumentos (ticker, descripcion, asset_category, sub_category, clasificacion_cnbv,');
 salida.push('  clase_activo, es_equivalente_efectivo, elegible, duracion_efectiva, nota, verificado_en) values');
 salida.push(ins.map((r) => `  (${[
@@ -80,9 +89,11 @@ salida.push(ins.map((r) => `  (${[
   lit(r.clase_activo), bool(r.es_equivalente_efectivo), bool(r.elegible), num(r.duracion_efectiva, 2),
   lit(r.nota), fecha(r.verificado_en),
 ].join(', ')})`).join(',\n') + ';');
-salida.push('insert into public.catalogo_prorrateo (ticker, clase_activo, factor) values');
-salida.push(pro.map((r) => `  (${lit(r.ticker)}, ${lit(r.clase_activo)}, ${num(r.factor, 5)})`).join(',\n') + ';');
+if (!sinProrrateo) {
+  salida.push('insert into public.catalogo_prorrateo (ticker, clase_activo, factor) values');
+  salida.push(pro.map((r) => `  (${lit(r.ticker)}, ${lit(r.clase_activo)}, ${num(r.factor, 5)})`).join(',\n') + ';');
+}
 salida.push('create temporary table _esperado on commit drop as');
 salida.push(`select ${ins.length} as instrumentos, ${pro.length} as prorrateo,`);
-salida.push(`       '${md5(canonI)}'::text as huella_instrumentos, '${md5(canonP)}'::text as huella_prorrateo;`);
+salida.push(`       '${md5(canonI)}'::text as huella_instrumentos, ${sinProrrateo ? 'null' : `'${md5(canonP)}'`}::text as huella_prorrateo;`);
 process.stdout.write(salida.join('\n') + '\n');
