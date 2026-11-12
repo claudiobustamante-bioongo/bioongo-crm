@@ -1,7 +1,7 @@
 -- ============================================================================
 -- base.sql · réplica PGlite · SOLO ESQUEMA de public, sin una fila de datos.
--- Última migración incluida: 2026-11-11-01-catalogo-y-checks.sql (según la bitácora)
--- Generado desde el catálogo de producción el 2026-11-11 09:56 (CDMX)
+-- Última migración incluida: 2026-11-12-01-parametros-ips.sql (según la bitácora)
+-- Generado desde el catálogo de producción el 2026-11-12 10:15 (CDMX)
 -- con scripts/replica/generar-base.sql. No se edita a mano: se regenera.
 -- ============================================================================
 set check_function_bodies = off;
@@ -1108,6 +1108,25 @@ create table public.kyc_detalle (
   persona_id uuid,
   no_vigente_motivo text
 );
+create table public.limites_fase (
+  id uuid default gen_random_uuid() not null,
+  fase text not null,
+  rv_max_pct numeric(6,3) not null,
+  rf_min_pct numeric(6,3) not null,
+  liquidez_min_pct numeric(6,3) not null,
+  fuente text not null,
+  creado_en timestamp with time zone default now() not null,
+  creado_por text default COALESCE(((NULLIF(current_setting('request.jwt.claims'::text, true), ''::text))::jsonb ->> 'email'::text), 'sql_directo'::text) not null
+);
+create table public.limites_perfil (
+  id uuid default gen_random_uuid() not null,
+  perfil text not null,
+  clase_activo text not null,
+  max_pct numeric(6,3) not null,
+  fuente text not null,
+  creado_en timestamp with time zone default now() not null,
+  creado_por text default COALESCE(((NULLIF(current_setting('request.jwt.claims'::text, true), ''::text))::jsonb ->> 'email'::text), 'sql_directo'::text) not null
+);
 create table public.listas_coincidencias (
   id uuid default gen_random_uuid() not null,
   codigo_cliente text not null,
@@ -1147,6 +1166,17 @@ create table public.listas_registros (
   pais text,
   observaciones text,
   created_at timestamp with time zone default now() not null
+);
+create table public.parametros_cumplimiento (
+  id uuid default gen_random_uuid() not null,
+  clave text not null,
+  tipo text not null,
+  valor_num numeric,
+  valor_fecha date,
+  valor_bool boolean,
+  nota text not null,
+  creado_en timestamp with time zone default now() not null,
+  creado_por text default COALESCE(((NULLIF(current_setting('request.jwt.claims'::text, true), ''::text))::jsonb ->> 'email'::text), 'sql_directo'::text) not null
 );
 create table public.pep_listas (
   id uuid default gen_random_uuid() not null,
@@ -1381,6 +1411,20 @@ create table public.propietario_real (
   persona_id uuid,
   cuenta_ibkr text
 );
+create table public.reglas_perfil (
+  id uuid default gen_random_uuid() not null,
+  perfil text not null,
+  duracion_gob_menor_a numeric(5,2),
+  liquidez_min_pct numeric(6,3) not null,
+  efectivo_cuenta_rf boolean not null,
+  retorno_min_pct numeric(6,3) not null,
+  retorno_max_pct numeric(6,3),
+  rv_total_max_pct numeric(6,3) not null,
+  vehiculos_max_pct numeric(6,3) not null,
+  fuente text not null,
+  creado_en timestamp with time zone default now() not null,
+  creado_por text default COALESCE(((NULLIF(current_setting('request.jwt.claims'::text, true), ''::text))::jsonb ->> 'email'::text), 'sql_directo'::text) not null
+);
 create table public.rendimientos_horizonte (
   id uuid default gen_random_uuid() not null,
   sync_id uuid not null,
@@ -1518,12 +1562,26 @@ alter table kyc_detalle add constraint kyc_detalle_codigo_cliente_key UNIQUE (co
 alter table kyc_detalle add constraint kyc_detalle_pkey PRIMARY KEY (id);
 alter table kyc_detalle add constraint kyc_no_vigente_lleno CHECK (((no_vigente_motivo IS NULL) OR (btrim(no_vigente_motivo) <> ''::text)));
 alter table kyc_detalle add constraint kyc_vigente_o_persona CHECK (((no_vigente_motivo IS NULL) OR (persona_id IS NULL)));
+alter table limites_fase add constraint limites_fase_fase_key UNIQUE (fase);
+alter table limites_fase add constraint limites_fase_pkey PRIMARY KEY (id);
+alter table limites_fase add constraint limites_fase_rangos CHECK ((((rv_max_pct >= (0)::numeric) AND (rv_max_pct <= (100)::numeric)) AND ((rf_min_pct >= (0)::numeric) AND (rf_min_pct <= (100)::numeric)) AND ((liquidez_min_pct >= (0)::numeric) AND (liquidez_min_pct <= (100)::numeric)) AND ((rf_min_pct + liquidez_min_pct) <= (100)::numeric)));
+alter table limites_fase add constraint limites_fase_valida CHECK ((fase = ANY (ARRAY['Desarrollo'::text, 'Aceleracion'::text, 'Acumulacion'::text, 'Consolidacion'::text, 'Retiro'::text])));
+alter table limites_perfil add constraint limites_perfil_clase_valida CHECK ((clase_activo = ANY (ARRAY['GOB_MX'::text, 'GOB_EXT'::text, 'GOB_EMERGENTE'::text, 'CORP_IG'::text, 'HIGH_YIELD'::text, 'ACC_BMV'::text, 'ACC_SIC'::text, 'CRIPTO'::text, 'DERIVADO'::text, 'COMMODITY'::text, 'APALANCADO'::text])));
+alter table limites_perfil add constraint limites_perfil_perfil_valido CHECK ((perfil = ANY (ARRAY['Libre de Riesgo'::text, 'Bajo'::text, 'Moderado'::text, 'Alto'::text])));
+alter table limites_perfil add constraint limites_perfil_pkey PRIMARY KEY (id);
+alter table limites_perfil add constraint limites_perfil_rango CHECK (((max_pct >= (0)::numeric) AND (max_pct <= (100)::numeric)));
+alter table limites_perfil add constraint limites_perfil_unico UNIQUE (perfil, clase_activo);
 alter table listas_coincidencias add constraint listas_coincidencias_estado_check CHECK ((estado = ANY (ARRAY['pendiente'::text, 'confirmada'::text, 'descartada'::text])));
 alter table listas_coincidencias add constraint listas_coincidencias_pkey PRIMARY KEY (id);
 alter table listas_coincidencias add constraint listas_coincidencias_tipo_match_check CHECK ((tipo_match = ANY (ARRAY['rfc_exacto'::text, 'curp_exacto'::text, 'nombre_exacto'::text])));
 alter table listas_control add constraint listas_control_pkey PRIMARY KEY (id);
 alter table listas_control add constraint listas_control_tipo_check CHECK ((tipo = ANY (ARRAY['LPB'::text, 'PEP_NACIONAL'::text, 'OFAC'::text, 'SAT_69B'::text, 'ONU'::text])));
 alter table listas_registros add constraint listas_registros_pkey PRIMARY KEY (id);
+alter table parametros_cumplimiento add constraint parametros_clave_forma CHECK ((clave ~ '^[a-z][a-z0-9_]*$'::text));
+alter table parametros_cumplimiento add constraint parametros_cumplimiento_clave_key UNIQUE (clave);
+alter table parametros_cumplimiento add constraint parametros_cumplimiento_pkey PRIMARY KEY (id);
+alter table parametros_cumplimiento add constraint parametros_tipo_valido CHECK ((tipo = ANY (ARRAY['numero'::text, 'fecha'::text, 'booleano'::text])));
+alter table parametros_cumplimiento add constraint parametros_un_valor CHECK (((num_nonnulls(valor_num, valor_fecha, valor_bool) = 1) AND ((tipo = 'numero'::text) = (valor_num IS NOT NULL)) AND ((tipo = 'fecha'::text) = (valor_fecha IS NOT NULL)) AND ((tipo = 'booleano'::text) = (valor_bool IS NOT NULL))));
 alter table pep_listas add constraint pep_listas_pkey PRIMARY KEY (id);
 alter table pep_listas add constraint pep_no_vigente_lleno CHECK (((no_vigente_motivo IS NULL) OR (btrim(no_vigente_motivo) <> ''::text)));
 alter table pep_listas add constraint pep_vigente_o_persona CHECK (((no_vigente_motivo IS NULL) OR (persona_id IS NULL)));
@@ -1560,6 +1618,12 @@ alter table posiciones_detalle add constraint posicion_tipo_valido CHECK ((tipo_
 alter table posiciones_detalle add constraint posiciones_detalle_pkey PRIMARY KEY (id);
 alter table propietario_real add constraint propietario_real_pkey PRIMARY KEY (id);
 alter table propietario_real add constraint propietario_un_dueno CHECK (((persona_id IS NULL) OR (cuenta_ibkr IS NULL)));
+alter table reglas_perfil add constraint reglas_perfil_duracion CHECK ((duracion_gob_menor_a > (0)::numeric));
+alter table reglas_perfil add constraint reglas_perfil_perfil_key UNIQUE (perfil);
+alter table reglas_perfil add constraint reglas_perfil_pkey PRIMARY KEY (id);
+alter table reglas_perfil add constraint reglas_perfil_rangos CHECK ((((liquidez_min_pct >= (0)::numeric) AND (liquidez_min_pct <= (100)::numeric)) AND ((rv_total_max_pct >= (0)::numeric) AND (rv_total_max_pct <= (100)::numeric)) AND ((vehiculos_max_pct >= (0)::numeric) AND (vehiculos_max_pct <= (100)::numeric))));
+alter table reglas_perfil add constraint reglas_perfil_retorno CHECK ((retorno_max_pct > retorno_min_pct));
+alter table reglas_perfil add constraint reglas_perfil_valido CHECK ((perfil = ANY (ARRAY['Libre de Riesgo'::text, 'Bajo'::text, 'Moderado'::text, 'Alto'::text])));
 alter table rendimientos_horizonte add constraint rendimiento_moneda_forma CHECK ((moneda_base ~ '^[A-Z]{3}$'::text));
 alter table rendimientos_horizonte add constraint rendimiento_rango_valido CHECK ((fd <= td));
 alter table rendimientos_horizonte add constraint rendimiento_unico UNIQUE (cuenta_ibkr, ventana, td);
@@ -1664,8 +1728,11 @@ CREATE TRIGGER trg_bitacora AFTER DELETE OR UPDATE ON public.ebr_evaluaciones FO
 CREATE TRIGGER trg_archivar_firmas BEFORE DELETE OR UPDATE ON public.firmas_cumplimiento FOR EACH ROW EXECUTE FUNCTION fn_archivar_firmas();
 CREATE TRIGGER trg_bitacora AFTER INSERT OR DELETE OR UPDATE ON public.firmas_cumplimiento FOR EACH ROW EXECUTE FUNCTION fn_bitacora();
 CREATE TRIGGER trg_bitacora AFTER INSERT OR DELETE OR UPDATE ON public.kyc_detalle FOR EACH ROW EXECUTE FUNCTION fn_bitacora();
+CREATE TRIGGER trg_bitacora AFTER INSERT OR DELETE OR UPDATE ON public.limites_fase FOR EACH ROW EXECUTE FUNCTION fn_bitacora();
+CREATE TRIGGER trg_bitacora AFTER INSERT OR DELETE OR UPDATE ON public.limites_perfil FOR EACH ROW EXECUTE FUNCTION fn_bitacora();
 CREATE TRIGGER trg_bitacora AFTER INSERT OR DELETE OR UPDATE ON public.listas_coincidencias FOR EACH ROW EXECUTE FUNCTION fn_bitacora();
 CREATE TRIGGER trg_bitacora AFTER INSERT OR DELETE OR UPDATE ON public.listas_control FOR EACH ROW EXECUTE FUNCTION fn_bitacora();
+CREATE TRIGGER trg_bitacora AFTER INSERT OR DELETE OR UPDATE ON public.parametros_cumplimiento FOR EACH ROW EXECUTE FUNCTION fn_bitacora();
 CREATE TRIGGER trg_bitacora AFTER INSERT OR DELETE OR UPDATE ON public.pep_listas FOR EACH ROW EXECUTE FUNCTION fn_bitacora();
 CREATE TRIGGER trg_archivar_perfil_riesgo BEFORE DELETE OR UPDATE ON public.perfil_riesgo FOR EACH ROW EXECUTE FUNCTION fn_archivar_perfil_riesgo();
 CREATE TRIGGER trg_bitacora AFTER INSERT OR DELETE OR UPDATE ON public.perfil_riesgo FOR EACH ROW EXECUTE FUNCTION fn_bitacora();
@@ -1674,6 +1741,7 @@ CREATE TRIGGER trg_bitacora AFTER INSERT OR DELETE OR UPDATE ON public.personas 
 CREATE TRIGGER trg_solo_agregar BEFORE DELETE OR UPDATE ON public.posiciones_detalle FOR EACH ROW EXECUTE FUNCTION fn_solo_agregar();
 CREATE TRIGGER trg_solo_agregar_truncate BEFORE TRUNCATE ON public.posiciones_detalle FOR EACH STATEMENT EXECUTE FUNCTION fn_solo_agregar();
 CREATE TRIGGER trg_bitacora AFTER INSERT OR DELETE OR UPDATE ON public.propietario_real FOR EACH ROW EXECUTE FUNCTION fn_bitacora();
+CREATE TRIGGER trg_bitacora AFTER INSERT OR DELETE OR UPDATE ON public.reglas_perfil FOR EACH ROW EXECUTE FUNCTION fn_bitacora();
 CREATE TRIGGER trg_solo_agregar BEFORE DELETE OR UPDATE ON public.rendimientos_horizonte FOR EACH ROW EXECUTE FUNCTION fn_solo_agregar();
 CREATE TRIGGER trg_solo_agregar_truncate BEFORE TRUNCATE ON public.rendimientos_horizonte FOR EACH STATEMENT EXECUTE FUNCTION fn_solo_agregar();
 CREATE TRIGGER trg_solo_agregar BEFORE DELETE OR UPDATE ON public.sync_ibkr FOR EACH ROW EXECUTE FUNCTION fn_solo_agregar();
@@ -1697,9 +1765,12 @@ alter table public.ebr_evaluaciones enable row level security;
 alter table public.firmas_cumplimiento enable row level security;
 alter table public.firmas_cumplimiento_historico enable row level security;
 alter table public.kyc_detalle enable row level security;
+alter table public.limites_fase enable row level security;
+alter table public.limites_perfil enable row level security;
 alter table public.listas_coincidencias enable row level security;
 alter table public.listas_control enable row level security;
 alter table public.listas_registros enable row level security;
+alter table public.parametros_cumplimiento enable row level security;
 alter table public.pep_listas enable row level security;
 alter table public.perfil_riesgo enable row level security;
 alter table public.perfil_riesgo_historico enable row level security;
@@ -1708,6 +1779,7 @@ alter table public.personas_historico enable row level security;
 alter table public.portafolios enable row level security;
 alter table public.posiciones_detalle enable row level security;
 alter table public.propietario_real enable row level security;
+alter table public.reglas_perfil enable row level security;
 alter table public.rendimientos_horizonte enable row level security;
 alter table public.sync_ibkr enable row level security;
 alter table public.transaccionalidad enable row level security;
@@ -1738,6 +1810,8 @@ create policy firmas_select_auth on public.firmas_cumplimiento as permissive for
 create policy kyc_insert_auth on public.kyc_detalle as permissive for insert to authenticated with check (true);
 create policy kyc_select_auth on public.kyc_detalle as permissive for select to authenticated using (true);
 create policy kyc_update_auth on public.kyc_detalle as permissive for update to authenticated using (true) with check (true);
+create policy limites_fase_select_auth on public.limites_fase as permissive for select to authenticated using (true);
+create policy limites_perfil_select_auth on public.limites_perfil as permissive for select to authenticated using (true);
 create policy listas_coinc_ins on public.listas_coincidencias as permissive for insert to authenticated with check (true);
 create policy listas_coinc_sel on public.listas_coincidencias as permissive for select to authenticated using (true);
 create policy listas_coinc_upd on public.listas_coincidencias as permissive for update to authenticated using (true) with check (true);
@@ -1746,6 +1820,7 @@ create policy listas_control_sel on public.listas_control as permissive for sele
 create policy listas_control_upd on public.listas_control as permissive for update to authenticated using (true) with check (true);
 create policy listas_registros_ins on public.listas_registros as permissive for insert to authenticated with check (true);
 create policy listas_registros_sel on public.listas_registros as permissive for select to authenticated using (true);
+create policy parametros_cumplimiento_select_auth on public.parametros_cumplimiento as permissive for select to authenticated using (true);
 create policy pep_insert_auth on public.pep_listas as permissive for insert to authenticated with check (true);
 create policy pep_select_auth on public.pep_listas as permissive for select to authenticated using (true);
 create policy pep_update_auth on public.pep_listas as permissive for update to authenticated using (true) with check (true);
@@ -1762,6 +1837,7 @@ create policy posiciones_detalle_select_auth on public.posiciones_detalle as per
 create policy prop_insert_auth on public.propietario_real as permissive for insert to authenticated with check (true);
 create policy prop_select_auth on public.propietario_real as permissive for select to authenticated using (true);
 create policy prop_update_auth on public.propietario_real as permissive for update to authenticated using (true) with check (true);
+create policy reglas_perfil_select_auth on public.reglas_perfil as permissive for select to authenticated using (true);
 create policy rendimientos_horizonte_select_auth on public.rendimientos_horizonte as permissive for select to authenticated using (true);
 create policy sync_ibkr_select_auth on public.sync_ibkr as permissive for select to authenticated using (true);
 create policy transacc_insert_auth on public.transaccionalidad as permissive for insert to authenticated with check (true);
@@ -2065,6 +2141,12 @@ grant TRUNCATE on public.kyc_detalle to service_role;
 grant UPDATE on public.kyc_detalle to anon;
 grant UPDATE on public.kyc_detalle to authenticated;
 grant UPDATE on public.kyc_detalle to service_role;
+revoke all on public.limites_fase from public, anon, authenticated, service_role;
+grant SELECT on public.limites_fase to authenticated;
+grant SELECT on public.limites_fase to service_role;
+revoke all on public.limites_perfil from public, anon, authenticated, service_role;
+grant SELECT on public.limites_perfil to authenticated;
+grant SELECT on public.limites_perfil to service_role;
 revoke all on public.listas_coincidencias from public, anon, authenticated, service_role;
 grant DELETE on public.listas_coincidencias to anon;
 grant DELETE on public.listas_coincidencias to authenticated;
@@ -2140,6 +2222,9 @@ grant TRUNCATE on public.listas_registros to service_role;
 grant UPDATE on public.listas_registros to anon;
 grant UPDATE on public.listas_registros to authenticated;
 grant UPDATE on public.listas_registros to service_role;
+revoke all on public.parametros_cumplimiento from public, anon, authenticated, service_role;
+grant SELECT on public.parametros_cumplimiento to authenticated;
+grant SELECT on public.parametros_cumplimiento to service_role;
 revoke all on public.pep_listas from public, anon, authenticated, service_role;
 grant DELETE on public.pep_listas to anon;
 grant DELETE on public.pep_listas to authenticated;
@@ -2284,6 +2369,9 @@ grant TRUNCATE on public.propietario_real to service_role;
 grant UPDATE on public.propietario_real to anon;
 grant UPDATE on public.propietario_real to authenticated;
 grant UPDATE on public.propietario_real to service_role;
+revoke all on public.reglas_perfil from public, anon, authenticated, service_role;
+grant SELECT on public.reglas_perfil to authenticated;
+grant SELECT on public.reglas_perfil to service_role;
 revoke all on public.rendimientos_horizonte from public, anon, authenticated, service_role;
 grant SELECT on public.rendimientos_horizonte to authenticated;
 grant SELECT on public.rendimientos_horizonte to service_role;
