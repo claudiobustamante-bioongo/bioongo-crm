@@ -74,6 +74,28 @@ test('valor en base = positionValue × fxRateToBase; el renglón LOT no duplica 
   assert.equal(c.fecha_fondeo, '2020-01-15');
 });
 
+test('el mismo ticker en dos bolsas dentro de una cuenta (p. ej. NFLX en NASDAQ y MEXI): con conid distinto, quedan las dos posiciones', () => {
+  const doble = XML.replace(
+    '<OpenPosition accountId="U0000001" currency="MXN" fxRateToBase="1" assetCategory="STK" subCategory="ETF" symbol="NAFTRAC"',
+    '<OpenPosition accountId="U0000001" currency="USD" fxRateToBase="18.5" assetCategory="STK" subCategory="ETF" symbol="VOO" description="VANGUARD S&P 500 ETF" conid="9001" position="1" markPrice="500" positionValue="500" listingExchange="MEXI" levelOfDetail="SUMMARY" />\n' +
+      '<OpenPosition accountId="U0000001" currency="MXN" fxRateToBase="1" assetCategory="STK" subCategory="ETF" symbol="NAFTRAC"',
+  );
+  const rep = parsearFlex(doble, TD);
+  assert.deepEqual(rep.descartadas.map((d) => d.cuenta_ibkr), ['U0000004', 'U0000005']);
+  const voo = rep.cuentas.find((c) => c.cuenta_ibkr === 'U0000001')!.renglones.filter((r) => r.ticker === 'VOO');
+  assert.deepEqual(voo.map((r) => r.conid).sort(), [1001, 9001]);
+});
+
+test('el mismo ticker dos veces SIN conid: la cuenta se descarta (la base no podría guardarlo)', () => {
+  const sinConid = XML.replace(/ conid="1001"/g, '').replace(
+    '<OpenPosition accountId="U0000001" currency="MXN" fxRateToBase="1" assetCategory="STK" subCategory="ETF" symbol="NAFTRAC"',
+    '<OpenPosition accountId="U0000001" currency="USD" fxRateToBase="18.5" assetCategory="STK" subCategory="ETF" symbol="VOO" position="1" markPrice="500" positionValue="500" levelOfDetail="SUMMARY" />\n' +
+      '<OpenPosition accountId="U0000001" currency="MXN" fxRateToBase="1" assetCategory="STK" subCategory="ETF" symbol="NAFTRAC"',
+  );
+  const d = parsearFlex(sinConid, TD).descartadas.find((x) => x.cuenta_ibkr === 'U0000001');
+  assert.equal(d?.motivo, 'instrumento repetido VOO');
+});
+
 test('«&» sin escapar se lee: la descripción llega como «S&P 500»', () => {
   assert.equal(cuenta('U0000001').renglones[0].descripcion, 'VANGUARD S&P 500 ETF');
   assert.equal(escaparAmpersands('a & b &amp; &#38; &#x26; &lt;'), 'a &amp; b &amp; &#38; &#x26; &lt;');
