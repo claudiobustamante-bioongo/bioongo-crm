@@ -1,6 +1,10 @@
 // Genera el bloque de carga del catálogo (INSERT … VALUES) desde los CSV de docs/.
 //
-//   node scripts/catalogo/csv-a-sql.mjs [instrumentos.csv] [prorrateo.csv | -]
+//   node scripts/catalogo/csv-a-sql.mjs [instrumentos.csv[,otro.csv…]] [prorrateo.csv | -]
+//
+// Varios CSV de instrumentos separados por coma se cargan en un solo INSERT, con
+// una sola huella; la cabecera lleva el md5 de cada archivo. Un ticker repetido
+// entre archivos es error.
 //
 // Con «-» en lugar del CSV de prorrateo (una alta sin MIXTO), no se emite el
 // INSERT del prorrateo y _esperado lleva prorrateo = 0 y huella_prorrateo NULL.
@@ -61,7 +65,8 @@ const fecha = (v) => {
 // Orden byte a byte, igual que `collate "C"` en la base.
 const porBytes = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 
-const ins = leerCsv(resolve(argI)).sort((a, b) => porBytes(a.ticker, b.ticker));
+const archivosI = argI.split(',').map((x) => x.trim());
+const ins = archivosI.flatMap((a) => leerCsv(resolve(a))).sort((a, b) => porBytes(a.ticker, b.ticker));
 const sinProrrateo = argP === '-';
 const pro = sinProrrateo
   ? []
@@ -78,7 +83,7 @@ const canonI = ins.map((r) => [
 const canonP = pro.map((r) => [r.ticker, r.clase_activo, Number(r.factor).toFixed(5)].join('|')).join('\n');
 
 const salida = [];
-salida.push(`-- Generado por scripts/catalogo/csv-a-sql.mjs desde ${argI} (md5 ${md5(readFileSync(argI, 'utf8'))})`);
+salida.push(`-- Generado por scripts/catalogo/csv-a-sql.mjs desde ${archivosI.map((a) => `${a} (md5 ${md5(readFileSync(a, 'utf8'))})`).join(', ')}`);
 salida.push(sinProrrateo
   ? '-- sin prorrateo. No se edita a mano: se regenera.'
   : `-- y ${argP} (md5 ${md5(readFileSync(argP, 'utf8'))}). No se edita a mano: se regenera.`);

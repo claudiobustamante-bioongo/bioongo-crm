@@ -1,0 +1,6 @@
+ticker,descripcion,asset_category,sub_category,clasificacion_cnbv,clase_activo,es_equivalente_efectivo,elegible,duracion_efectiva,nota,verificado_en
+EXUS,XTRACKERS MSCI WORLD EX USA UCITS ETF,STK,ETF,113,ACC_SIC,false,true,,ISIN IE0006WW1TQ4. Desarrollados sin EUA; emisoras no mexicanas.,2026-11-12
+SPY4,SPDR S&P 400 US MID CAP UCITS ETF,STK,ETF,113,ACC_SIC,false,true,,ISIN IE00B4YBJ215. Mediana capitalización EUA.,2026-11-12
+XDWF,XTRACKERS MSCI WORLD FINANCIALS UCITS ETF,STK,ETF,113,ACC_SIC,false,true,,ISIN IE00BM67HL84. Sector financiero global desarrollados.,2026-11-12
+XDWI,XTRACKERS MSCI WORLD INDUSTRIALS UCITS ETF,STK,ETF,113,ACC_SIC,false,true,,ISIN IE00BM67HV82. Sector industrial global desarrollados.,2026-11-12
+XDWS,XTRACKERS MSCI WORLD CONSUMER STAPLES UCITS ETF,STK,ETF,113,ACC_SIC,false,true,,ISIN IE00BM67HN09. Consumo básico global desarrollados.,2026-11-12

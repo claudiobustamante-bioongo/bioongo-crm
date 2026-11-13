@@ -1,7 +1,7 @@
 -- ============================================================================
 -- base.sql · réplica PGlite · SOLO ESQUEMA de public, sin una fila de datos.
--- Última migración incluida: 2026-11-12-02-catalogo-alta-motor.sql (según la bitácora)
--- Generado desde el catálogo de producción el 2026-11-12 10:24 (CDMX)
+-- Última migración incluida: 2026-11-13-02-cuentas-propia-y-cierre.sql (según la bitácora)
+-- Generado desde el catálogo de producción el 2026-11-13 10:59 (CDMX)
 -- con scripts/replica/generar-base.sql. No se edita a mano: se regenera.
 -- ============================================================================
 set check_function_bodies = off;
@@ -77,9 +77,10 @@ begin
   end if;
   select coalesce(max(version), 0) + 1 into v_version from cuentas_ibkr_historico where id = old.id;
   insert into cuentas_ibkr_historico (version, archivado_por, operacion, campos_cambiados, snapshot,
-    id, cuenta_ibkr, codigo_cliente, tipo, creado_en, creado_por)
+    id, cuenta_ibkr, codigo_cliente, tipo, creado_en, creado_por, es_propia, fecha_cierre, motivo_cierre)
   values (v_version, v_usuario, lower(tg_op), v_campos, to_jsonb(old),
-    old.id, old.cuenta_ibkr, old.codigo_cliente, old.tipo, old.creado_en, old.creado_por);
+    old.id, old.cuenta_ibkr, old.codigo_cliente, old.tipo, old.creado_en, old.creado_por,
+    old.es_propia, old.fecha_cierre, old.motivo_cierre);
   if (tg_op = 'DELETE') then return old; end if;
   return new;
 end $function$
@@ -966,7 +967,10 @@ create table public.cuentas_ibkr (
   codigo_cliente text not null,
   tipo text not null,
   creado_en timestamp with time zone default now() not null,
-  creado_por text default COALESCE(((NULLIF(current_setting('request.jwt.claims'::text, true), ''::text))::jsonb ->> 'email'::text), 'sql_directo'::text) not null
+  creado_por text default COALESCE(((NULLIF(current_setting('request.jwt.claims'::text, true), ''::text))::jsonb ->> 'email'::text), 'sql_directo'::text) not null,
+  es_propia boolean default false not null,
+  fecha_cierre date,
+  motivo_cierre text
 );
 create table public.cuentas_ibkr_historico (
   historico_id uuid default gen_random_uuid() not null,
@@ -981,7 +985,10 @@ create table public.cuentas_ibkr_historico (
   codigo_cliente text,
   tipo text,
   creado_en timestamp with time zone,
-  creado_por text
+  creado_por text,
+  es_propia boolean,
+  fecha_cierre date,
+  motivo_cierre text
 );
 create table public.documentos_expediente (
   id uuid default gen_random_uuid() not null,
@@ -1519,9 +1526,11 @@ alter table cuenta_titulares add constraint cuenta_titulares_rol_valido CHECK ((
 alter table cuentas_ibkr_historico add constraint cuentas_ibkr_historico_operacion_check CHECK ((operacion = ANY (ARRAY['update'::text, 'delete'::text])));
 alter table cuentas_ibkr_historico add constraint cuentas_ibkr_historico_pkey PRIMARY KEY (historico_id);
 alter table cuentas_ibkr_historico add constraint cuentas_ibkr_historico_version_unica UNIQUE (id, version);
+alter table cuentas_ibkr add constraint cuentas_ibkr_cierre_completo CHECK (((fecha_cierre IS NULL) = (motivo_cierre IS NULL)));
 alter table cuentas_ibkr add constraint cuentas_ibkr_codigo_unico UNIQUE (codigo_cliente);
 alter table cuentas_ibkr add constraint cuentas_ibkr_cuenta_unica UNIQUE (cuenta_ibkr);
 alter table cuentas_ibkr add constraint cuentas_ibkr_forma CHECK ((cuenta_ibkr ~ '^U[0-9]+$'::text));
+alter table cuentas_ibkr add constraint cuentas_ibkr_motivo_cierre_lleno CHECK (((motivo_cierre IS NULL) OR (btrim(motivo_cierre) <> ''::text)));
 alter table cuentas_ibkr add constraint cuentas_ibkr_pkey PRIMARY KEY (id);
 alter table cuentas_ibkr add constraint cuentas_ibkr_tipo_valido CHECK ((tipo = ANY (ARRAY['individual'::text, 'conjunta'::text])));
 alter table documentos_expediente_historico add constraint documentos_expediente_historico_operacion_check CHECK ((operacion = ANY (ARRAY['update'::text, 'delete'::text])));

@@ -79,12 +79,14 @@ test('«&» sin escapar se lee: la descripción llega como «S&P 500»', () => {
   assert.equal(escaparAmpersands('a & b &amp; &#38; &#x26; &lt;'), 'a &amp; b &amp; &#38; &#x26; &lt;');
 });
 
-test('efectivo = endingSettledCash de BASE_SUMMARY, sin sumar las divisas', () => {
+test('efectivo: el renglón EFECTIVO es endingSettledCash de BASE_SUMMARY, sin sumar las divisas', () => {
   const c = cuenta('U0000001');
   const efectivo = c.renglones.filter((r) => r.tipo_renglon === 'efectivo');
   assert.equal(efectivo.length, 1);
   assert.equal(efectivo[0].ticker, 'EFECTIVO');
   assert.equal(efectivo[0].valor_base, 1000);
+  assert.equal(c.efectivo_liquidado, 1000);
+  assert.equal(c.efectivo_total, 1200);
 });
 
 test('NAV de IBKR = total de la ÚLTIMA fecha, aunque no venga al final', () => {
@@ -92,7 +94,35 @@ test('NAV de IBKR = total de la ÚLTIMA fecha, aunque no venga al final', () => 
   assert.equal(c.nav_ibkr, 108800);
   const nav = c.renglones.filter((r) => r.tipo_renglon === 'nav_ibkr');
   assert.deepEqual(nav.map((r) => [r.ticker, r.valor_base]), [['NAV_IBKR', 108800]]);
-  assert.equal(c.valor_calculado, 108750);
+});
+
+test('la conciliación suma el efectivo TOTAL (endingCash), no el liquidado', () => {
+  // 92 500 + 6 000 + 9 250 de posiciones + 1 200 de endingCash (el liquidado es 1 000).
+  assert.equal(cuenta('U0000001').valor_calculado, 108950);
+});
+
+/** Una cuenta mínima: sin posiciones, con efectivo total y liquidado distintos. */
+const unaCuenta = (cash: string) =>
+  '<FlexQueryResponse queryName="SINTETICO" type="AF"><FlexStatements count="1">' +
+  `<FlexStatement accountId="U0000009" fromDate="${TD}" toDate="${TD}">` +
+  '<AccountInformation accountId="U0000009" currency="MXN" />' +
+  `<EquitySummaryInBase><EquitySummaryByReportDateInBase accountId="U0000009" reportDate="${TD}" total="1000" /></EquitySummaryInBase>` +
+  `<CashReport><CashReportCurrency accountId="U0000009" currency="BASE_SUMMARY" ${cash} /></CashReport>` +
+  '</FlexStatement></FlexStatements></FlexQueryResponse>';
+
+test('una venta sin liquidar no descuadra el NAV, y la liquidez sigue siendo lo liquidado', () => {
+  // Vendió 200 hoy: el NAV (1 000) ya cuenta el dinero; el efectivo liquidado (800) todavía no.
+  const rep = parsearFlex(unaCuenta('endingCash="1000" endingSettledCash="800"'), TD);
+  const c = rep.cuentas[0];
+  assert.equal(c.valor_calculado, 1000);
+  assert.deepEqual(c.renglones.filter((r) => r.tipo_renglon === 'efectivo').map((r) => r.valor_base), [800]);
+  const crm = [{ cuenta_ibkr: 'U0000009', codigo_cliente: 'CSPFU9009', fecha_baja: null }];
+  assert.deepEqual(calcularDescuadres(rep, crm, CATALOGO).filter((d) => d.tipo === 'nav_descuadrado'), []);
+});
+
+test('BASE_SUMMARY sin endingCash: la cuenta se descarta, no se concilia con un supuesto', () => {
+  const rep = parsearFlex(unaCuenta('endingSettledCash="800"'), TD);
+  assert.deepEqual(rep.descartadas, [{ cuenta_ibkr: 'U0000009', motivo: 'falta endingCash' }]);
 });
 
 test('TWR y el resto de ChangeInNAV; sin ChangeInNAV, rendimiento null', () => {

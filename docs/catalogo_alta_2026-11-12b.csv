@@ -1,0 +1,8 @@
+ticker,descripcion,asset_category,sub_category,clasificacion_cnbv,clase_activo,es_equivalente_efectivo,elegible,duracion_efectiva,nota,verificado_en
+HSTE,HSBC HANG SENG TECH UCITS ETF,STK,ETF,113,ACC_SIC,false,true,,Emisoras de Hong Kong/China; clase por emisor.,2026-11-12
+MVOL,ISHARES EDGE MSCI WORLD MIN VOL UCITS ETF,STK,ETF,113,ACC_SIC,false,true,,Desarrollados de baja volatilidad; sin emisoras mexicanas. Comprado oct-2026.,2026-11-12
+NFLX,NETFLIX INC,STK,COMMON,101,ACC_SIC,false,true,,,2026-11-12
+SPGI,S&P GLOBAL INC,STK,COMMON,101,ACC_SIC,false,true,,Cotiza en SIC (MEXI); emisora no mexicana: ACC_SIC por emisor.,2026-11-12
+TIP5,ISHARES USD TIPS 0-5 UCITS ETF DIST,STK,ETF,113,GOB_EXT,false,true,2.40,"Duración por supuesto, igual a TI5A (mismo índice, otra clase de reparto). Verificar ISIN y duración en la ficha y fechar. ISIN IE00BDQYWQ65; misma cartera que TI5A.",
+VITL,VITAL FARMS INC,STK,COMMON,101,ACC_SIC,false,true,,,2026-11-12
+XDWH,XTRACKERS MSCI WORLD HEALTH CARE UCITS ETF,STK,ETF,113,ACC_SIC,false,true,,Sector salud global desarrollados; comprado oct-2026.,2026-11-12

@@ -13,8 +13,13 @@
  *   los sondeos de «¿ya está listo?». El limitador vale dentro de UN proceso: no
  *   es global. Alcanza porque la carga la dispara una persona, de una en una.
  * - Trampas de la §1.5: moneda base de AccountInformation; valor en base =
- *   positionValue × fxRateToBase; efectivo SOLO del renglón BASE_SUMMARY
- *   (endingSettledCash), porque sumar las divisas lo duplica; NAV de IBKR = total
+ *   positionValue × fxRateToBase; efectivo SOLO del renglón BASE_SUMMARY, porque
+ *   sumar las divisas lo duplica. De ahí salen dos cifras (decisión de Claudio,
+ *   13-nov-2026, tras la vista previa del 12-nov): la LIQUIDEZ (el renglón
+ *   EFECTIVO de la foto) es endingSettledCash; la CONCILIACIÓN contra el NAV usa
+ *   endingCash, porque el NAV de IBKR ya incluye compras y ventas sin liquidar.
+ *   Con endingSettledCash, una venta del día dejaba la cuenta 15 % «abajo» del
+ *   NAV y una compra 9 % «arriba» (CSPFU8085, CSPFU2092). NAV de IBKR = total
  *   de la ÚLTIMA fecha de EquitySummaryByReportDateInBase; TWR en ChangeInNAV;
  *   «&» sin escapar re-escapado antes de leer.
  * - Un FlexStatement cuyo toDate no sea el td pedido se descarta y se reporta.
@@ -29,7 +34,7 @@ export const URL_FLEX = 'https://ndcdyn.interactivebrokers.com/AccountManagement
 export const ESPERA_REINTENTO_MS = 5_000;
 export const TOPE_ESPERA_MS = 150_000;
 export const MAX_DIAS = 365;
-/** Diferencia relativa entre posiciones + efectivo y el NAV de IBKR que se avisa. */
+/** Diferencia relativa entre posiciones + efectivo total y el NAV de IBKR que se avisa. */
 export const UMBRAL_NAV = 0.005;
 
 export const SIGNIFICADO_CODIGO: Readonly<Record<string, string>> = {
@@ -309,7 +314,11 @@ export interface CuentaFlex {
   /** Posiciones, efectivo (si hay Cash Report) y el renglón de control NAV_IBKR. */
   renglones: RenglonFoto[];
   nav_ibkr: number;
-  /** Posiciones + efectivo, en moneda base. */
+  /** Efectivo liquidado (BASE_SUMMARY.endingSettledCash): el del renglón EFECTIVO, para liquidez. */
+  efectivo_liquidado: number | null;
+  /** Efectivo total, con lo pendiente de liquidar (BASE_SUMMARY.endingCash): solo para conciliar. */
+  efectivo_total: number | null;
+  /** Posiciones + efectivo TOTAL, en moneda base: lo que se concilia contra NAV_IBKR. */
   valor_calculado: number;
   rendimiento: RendimientoFlex | null;
 }
@@ -388,12 +397,14 @@ function leerCuenta(st: Nodo, cuenta: string): CuentaFlex {
   }
 
   const cajas = lista((st.CashReport as Nodo | undefined)?.CashReportCurrency);
-  let efectivo: number | null = null;
+  let liquidado: number | null = null;
+  let total: number | null = null;
   if (cajas.length) {
     const base = cajas.find((c) => texto(c.currency) === 'BASE_SUMMARY');
     if (!base) throw new Descarte('Cash Report sin BASE_SUMMARY (sumar las divisas duplicaría el efectivo)');
-    efectivo = numRequerido(base.endingSettledCash, 'endingSettledCash');
-    renglones.push(renglonControl(cuenta, 'efectivo', efectivo, monedaBase));
+    liquidado = numRequerido(base.endingSettledCash, 'endingSettledCash');
+    total = numRequerido(base.endingCash, 'endingCash');
+    renglones.push(renglonControl(cuenta, 'efectivo', liquidado, monedaBase));
   }
 
   const navs = lista((st.EquitySummaryInBase as Nodo | undefined)?.EquitySummaryByReportDateInBase)
@@ -425,7 +436,9 @@ function leerCuenta(st: Nodo, cuenta: string): CuentaFlex {
     fecha_fondeo: fondeo ? aIso(fondeo) : null,
     renglones,
     nav_ibkr: nav,
-    valor_calculado: redondear(posiciones.reduce((s, r) => s + r.valor_base, 0) + (efectivo ?? 0)),
+    efectivo_liquidado: liquidado,
+    efectivo_total: total,
+    valor_calculado: redondear(posiciones.reduce((s, r) => s + r.valor_base, 0) + (total ?? 0)),
     rendimiento,
   };
 }
