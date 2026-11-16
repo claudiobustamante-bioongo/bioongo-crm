@@ -1,7 +1,7 @@
 -- ============================================================================
 -- base.sql · réplica PGlite · SOLO ESQUEMA de public, sin una fila de datos.
--- Última migración incluida: 2026-11-13-02-cuentas-propia-y-cierre.sql (según la bitácora)
--- Generado desde el catálogo de producción el 2026-11-13 10:59 (CDMX)
+-- Última migración incluida: 2026-11-16-01-semaforo-esquema.sql (según la bitácora)
+-- Generado desde el catálogo de producción el 2026-11-16 11:26 (CDMX)
 -- con scripts/replica/generar-base.sql. No se edita a mano: se regenera.
 -- ============================================================================
 set check_function_bodies = off;
@@ -77,10 +77,12 @@ begin
   end if;
   select coalesce(max(version), 0) + 1 into v_version from cuentas_ibkr_historico where id = old.id;
   insert into cuentas_ibkr_historico (version, archivado_por, operacion, campos_cambiados, snapshot,
-    id, cuenta_ibkr, codigo_cliente, tipo, creado_en, creado_por, es_propia, fecha_cierre, motivo_cierre)
+    id, cuenta_ibkr, codigo_cliente, tipo, creado_en, creado_por, es_propia, fecha_cierre, motivo_cierre,
+    codigo_ips_fijado, motivo_ips_fijado, fecha_ips_fijado)
   values (v_version, v_usuario, lower(tg_op), v_campos, to_jsonb(old),
     old.id, old.cuenta_ibkr, old.codigo_cliente, old.tipo, old.creado_en, old.creado_por,
-    old.es_propia, old.fecha_cierre, old.motivo_cierre);
+    old.es_propia, old.fecha_cierre, old.motivo_cierre,
+    old.codigo_ips_fijado, old.motivo_ips_fijado, old.fecha_ips_fijado);
   if (tg_op = 'DELETE') then return old; end if;
   return new;
 end $function$
@@ -683,6 +685,99 @@ begin
                             'subido_por', v_usuario);
 end $function$
 ;
+CREATE OR REPLACE FUNCTION public.fn_registrar_semaforo(p_lote jsonb)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+declare
+  v_usuario text := fn_firmante_sesion();
+  v_sync    sync_ibkr%rowtype;
+  v_version text;
+  v_fix     numeric;
+  v_evals   jsonb;
+  v_malo    text;
+  v_n       integer;
+begin
+  if v_usuario is null then
+    raise exception 'Sin sesión: registrar el semáforo exige un usuario autenticado.' using errcode = 'IB401';
+  end if;
+  if p_lote is null or jsonb_typeof(p_lote) <> 'object' or jsonb_typeof(p_lote -> 'evaluaciones') <> 'array'
+     or jsonb_array_length(p_lote -> 'evaluaciones') = 0 then
+    raise exception 'El lote debe traer evaluaciones.' using errcode = 'IB400';
+  end if;
+  select * into v_sync from sync_ibkr where id = (p_lote ->> 'sync_id')::uuid and uso = 'foto_diaria';
+  if not found then raise exception 'La carga no existe o no es una foto diaria.' using errcode = 'IB404'; end if;
+  v_version := p_lote ->> 'version_motor';
+  v_fix := (p_lote ->> 'tipo_cambio')::numeric;
+  v_evals := p_lote -> 'evaluaciones';
+
+  select e ->> 'cuenta_ibkr' into v_malo from jsonb_array_elements(v_evals) e
+   where not exists (select 1 from cuentas_ibkr c where c.cuenta_ibkr = e ->> 'cuenta_ibkr') limit 1;
+  if found then raise exception 'La cuenta % no está en cuentas_ibkr.', coalesce(v_malo, '(vacía)') using errcode = 'IB422'; end if;
+
+  -- Contra la foto: estados con datos exigen foto; SIN_DATOS exige que NO la haya.
+  select e ->> 'cuenta_ibkr' into v_malo from jsonb_array_elements(v_evals) e
+   where (e ->> 'estado' in ('VERDE', 'AMBAR', 'ROJO', 'INACTIVA')) <>
+         exists (select 1 from posiciones_detalle p where p.sync_id = v_sync.id and p.cuenta_ibkr = e ->> 'cuenta_ibkr')
+     and e ->> 'estado' not in ('EXENTO', 'SIN_PERFIL')
+   limit 1;
+  if found then
+    raise exception 'La evaluación de % no corresponde a la foto (estado con datos sin foto, o SIN_DATOS con foto).', v_malo
+      using errcode = 'IB422';
+  end if;
+
+  insert into semaforo_evaluaciones (sync_id, fecha_foto, cuenta_ibkr, estado, hallazgos, metricas, perfil_aplicado,
+                                     limites_aplicados, ips_pendiente, tipo_cambio, version_motor, evaluado_por)
+  select v_sync.id, v_sync.td, x.cuenta_ibkr, x.estado, coalesce(x.hallazgos, '[]'), coalesce(x.metricas, '{}'),
+         x.perfil_aplicado, coalesce(x.limites_aplicados, '{}'), coalesce(x.ips_pendiente, '[]'), v_fix, v_version, v_usuario
+    from jsonb_to_recordset(v_evals) as x(cuenta_ibkr text, estado text, hallazgos jsonb, metricas jsonb,
+         perfil_aplicado jsonb, limites_aplicados jsonb, ips_pendiente jsonb);
+  get diagnostics v_n = row_count;
+
+  insert into bitacora (entidad, entidad_id, accion, usuario, origen, metadata)
+  values ('semaforo', v_sync.id::text, 'registro_semaforo', v_usuario, 'aplicacion',
+          jsonb_build_object('fecha_foto', v_sync.td, 'version_motor', v_version, 'evaluaciones', v_n,
+                             'tipo_cambio', v_fix,
+                             'por_estado', (select jsonb_object_agg(estado, n) from
+                                (select e ->> 'estado' as estado, count(*) n from jsonb_array_elements(v_evals) e group by 1) t)));
+  return jsonb_build_object('sync_id', v_sync.id, 'fecha_foto', v_sync.td, 'evaluaciones', v_n);
+end $function$
+;
+CREATE OR REPLACE FUNCTION public.fn_registrar_tipo_cambio(p_serie text, p_fecha date, p_valor numeric, p_fecha_solicitada date, p_fuente text, p_nota text)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+declare
+  v_usuario text := fn_firmante_sesion();
+  v_hoy     date := (now() at time zone 'America/Mexico_City')::date;
+  v_previo  tipo_cambio%rowtype;
+  v_id      uuid;
+begin
+  if v_usuario is null then
+    raise exception 'Sin sesión: registrar un tipo de cambio exige un usuario autenticado.' using errcode = 'IB401';
+  end if;
+  if p_serie is null or p_serie !~ '^SF[0-9]+$' or p_fecha is null or p_fecha_solicitada is null
+     or p_valor is null or p_valor <= 0 or btrim(coalesce(p_fuente, '')) = '' then
+    raise exception 'Serie, fechas, valor positivo y fuente son obligatorios.' using errcode = 'IB400';
+  end if;
+  if p_fecha > p_fecha_solicitada or p_fecha_solicitada > v_hoy then
+    raise exception 'La fecha del dato no puede ser posterior a la solicitada, ni la solicitada futura.' using errcode = 'IB400';
+  end if;
+  select * into v_previo from tipo_cambio where serie = p_serie and fecha = p_fecha;
+  if found then
+    raise exception 'Ya hay % del % (valor %): no se reescribe.', p_serie, p_fecha, v_previo.valor using errcode = 'IB409';
+  end if;
+  insert into tipo_cambio (serie, fecha, valor, fecha_solicitada, fuente, nota, capturado_por)
+  values (p_serie, p_fecha, p_valor, p_fecha_solicitada, p_fuente, nullif(btrim(coalesce(p_nota, '')), ''), v_usuario)
+  returning id into v_id;
+  return jsonb_build_object('id', v_id, 'serie', p_serie, 'fecha', p_fecha, 'valor', p_valor,
+                            'fecha_solicitada', p_fecha_solicitada);
+end $function$
+;
 CREATE OR REPLACE FUNCTION public.fn_resolver_coincidencia(p_coincidencia_id uuid, p_estado text, p_motivo text, p_rol text, p_declaracion text)
  RETURNS jsonb
  LANGUAGE plpgsql
@@ -970,7 +1065,10 @@ create table public.cuentas_ibkr (
   creado_por text default COALESCE(((NULLIF(current_setting('request.jwt.claims'::text, true), ''::text))::jsonb ->> 'email'::text), 'sql_directo'::text) not null,
   es_propia boolean default false not null,
   fecha_cierre date,
-  motivo_cierre text
+  motivo_cierre text,
+  codigo_ips_fijado text,
+  motivo_ips_fijado text,
+  fecha_ips_fijado date
 );
 create table public.cuentas_ibkr_historico (
   historico_id uuid default gen_random_uuid() not null,
@@ -988,7 +1086,10 @@ create table public.cuentas_ibkr_historico (
   creado_por text,
   es_propia boolean,
   fecha_cierre date,
-  motivo_cierre text
+  motivo_cierre text,
+  codigo_ips_fijado text,
+  motivo_ips_fijado text,
+  fecha_ips_fijado date
 );
 create table public.documentos_expediente (
   id uuid default gen_random_uuid() not null,
@@ -1450,6 +1551,22 @@ create table public.rendimientos_horizonte (
   fecha_fondeo date,
   creado_en timestamp with time zone default now() not null
 );
+create table public.semaforo_evaluaciones (
+  id uuid default gen_random_uuid() not null,
+  sync_id uuid not null,
+  fecha_foto date not null,
+  cuenta_ibkr text not null,
+  estado text not null,
+  hallazgos jsonb default '[]'::jsonb not null,
+  metricas jsonb default '{}'::jsonb not null,
+  perfil_aplicado jsonb,
+  limites_aplicados jsonb default '{}'::jsonb not null,
+  ips_pendiente jsonb default '[]'::jsonb not null,
+  tipo_cambio numeric(12,6),
+  version_motor text not null,
+  evaluado_por text not null,
+  evaluado_en timestamp with time zone default now() not null
+);
 create table public.sync_ibkr (
   id uuid default gen_random_uuid() not null,
   uso text not null,
@@ -1465,6 +1582,17 @@ create table public.sync_ibkr (
   descuadres jsonb default '[]'::jsonb not null,
   confirmado_por text not null,
   confirmado_en timestamp with time zone default now() not null
+);
+create table public.tipo_cambio (
+  id uuid default gen_random_uuid() not null,
+  serie text not null,
+  fecha date not null,
+  valor numeric(12,6) not null,
+  fecha_solicitada date not null,
+  fuente text not null,
+  nota text,
+  capturado_por text not null,
+  capturado_en timestamp with time zone default now() not null
 );
 create table public.transaccionalidad (
   id uuid default gen_random_uuid() not null,
@@ -1530,6 +1658,7 @@ alter table cuentas_ibkr add constraint cuentas_ibkr_cierre_completo CHECK (((fe
 alter table cuentas_ibkr add constraint cuentas_ibkr_codigo_unico UNIQUE (codigo_cliente);
 alter table cuentas_ibkr add constraint cuentas_ibkr_cuenta_unica UNIQUE (cuenta_ibkr);
 alter table cuentas_ibkr add constraint cuentas_ibkr_forma CHECK ((cuenta_ibkr ~ '^U[0-9]+$'::text));
+alter table cuentas_ibkr add constraint cuentas_ibkr_ips_fijado_completo CHECK (((num_nonnulls(codigo_ips_fijado, motivo_ips_fijado, fecha_ips_fijado) = ANY (ARRAY[0, 3])) AND ((motivo_ips_fijado IS NULL) OR (btrim(motivo_ips_fijado) <> ''::text))));
 alter table cuentas_ibkr add constraint cuentas_ibkr_motivo_cierre_lleno CHECK (((motivo_cierre IS NULL) OR (btrim(motivo_cierre) <> ''::text)));
 alter table cuentas_ibkr add constraint cuentas_ibkr_pkey PRIMARY KEY (id);
 alter table cuentas_ibkr add constraint cuentas_ibkr_tipo_valido CHECK ((tipo = ANY (ARRAY['individual'::text, 'conjunta'::text])));
@@ -1638,6 +1767,12 @@ alter table rendimientos_horizonte add constraint rendimiento_rango_valido CHECK
 alter table rendimientos_horizonte add constraint rendimiento_unico UNIQUE (cuenta_ibkr, ventana, td);
 alter table rendimientos_horizonte add constraint rendimiento_ventana_valida CHECK (((ventana = ANY (ARRAY['MTD'::text, 'QTD'::text, 'YTD'::text, '12M'::text, '12M-1'::text, '12M-2'::text, 'DESDE_APERTURA'::text])) OR (ventana ~ '^A[0-9]{4}$'::text)));
 alter table rendimientos_horizonte add constraint rendimientos_horizonte_pkey PRIMARY KEY (id);
+alter table semaforo_evaluaciones add constraint semaforo_estado_valido CHECK ((estado = ANY (ARRAY['VERDE'::text, 'AMBAR'::text, 'ROJO'::text, 'EXENTO'::text, 'SIN_PERFIL'::text, 'SIN_DATOS'::text, 'INACTIVA'::text])));
+alter table semaforo_evaluaciones add constraint semaforo_evaluaciones_pkey PRIMARY KEY (id);
+alter table semaforo_evaluaciones add constraint semaforo_fix_positivo CHECK ((tipo_cambio > (0)::numeric));
+alter table semaforo_evaluaciones add constraint semaforo_formas CHECK (((jsonb_typeof(hallazgos) = 'array'::text) AND (jsonb_typeof(metricas) = 'object'::text) AND (jsonb_typeof(limites_aplicados) = 'object'::text) AND (jsonb_typeof(ips_pendiente) = 'array'::text)));
+alter table semaforo_evaluaciones add constraint semaforo_unico UNIQUE (sync_id, cuenta_ibkr, version_motor);
+alter table semaforo_evaluaciones add constraint semaforo_version_forma CHECK ((version_motor ~ '^semaforo-[0-9]+\.[0-9]+\.[0-9]+$'::text));
 alter table sync_ibkr add constraint sync_conteos_validos CHECK (((cuentas_xml >= 0) AND (cuentas_cargadas > 0) AND (renglones > 0) AND (ignoradas >= 0)));
 alter table sync_ibkr add constraint sync_descuadres_lista CHECK ((jsonb_typeof(descuadres) = 'array'::text));
 alter table sync_ibkr add constraint sync_ibkr_pkey PRIMARY KEY (id);
@@ -1648,6 +1783,12 @@ alter table sync_ibkr add constraint sync_to_date_validado CHECK ((to_date_ibkr 
 alter table sync_ibkr add constraint sync_uso_valido CHECK ((uso = ANY (ARRAY['foto_diaria'::text, 'rendimiento'::text])));
 alter table sync_ibkr add constraint sync_ventana_por_uso CHECK ((((uso = 'foto_diaria'::text) AND (ventana IS NULL) AND (fd = td)) OR ((uso = 'rendimiento'::text) AND (ventana IS NOT NULL))));
 alter table sync_ibkr add constraint sync_ventana_valida CHECK (((ventana = ANY (ARRAY['MTD'::text, 'QTD'::text, 'YTD'::text, '12M'::text, '12M-1'::text, '12M-2'::text, 'DESDE_APERTURA'::text])) OR (ventana ~ '^A[0-9]{4}$'::text)));
+alter table tipo_cambio add constraint tipo_cambio_fechas CHECK ((fecha <= fecha_solicitada));
+alter table tipo_cambio add constraint tipo_cambio_nota_si_anterior CHECK (((fecha = fecha_solicitada) OR (btrim(COALESCE(nota, ''::text)) <> ''::text)));
+alter table tipo_cambio add constraint tipo_cambio_pkey PRIMARY KEY (id);
+alter table tipo_cambio add constraint tipo_cambio_serie_forma CHECK ((serie ~ '^SF[0-9]+$'::text));
+alter table tipo_cambio add constraint tipo_cambio_unico UNIQUE (serie, fecha);
+alter table tipo_cambio add constraint tipo_cambio_valor_positivo CHECK ((valor > (0)::numeric));
 alter table transaccionalidad add constraint transaccionalidad_cliente_fecha_key UNIQUE (codigo_cliente, fecha_declaracion);
 alter table transaccionalidad add constraint transaccionalidad_pkey PRIMARY KEY (id);
 alter table beneficiarios add constraint beneficiarios_beneficiario_persona_id_fkey FOREIGN KEY (beneficiario_persona_id) REFERENCES personas(id) DEFERRABLE;
@@ -1661,6 +1802,7 @@ alter table clientes add constraint clientes_codigo_cotitular_fkey FOREIGN KEY (
 alter table cuenta_titulares add constraint cuenta_titulares_cuenta_ibkr_fkey FOREIGN KEY (cuenta_ibkr) REFERENCES cuentas_ibkr(cuenta_ibkr) DEFERRABLE;
 alter table cuenta_titulares add constraint cuenta_titulares_persona_id_fkey FOREIGN KEY (persona_id) REFERENCES personas(id) DEFERRABLE;
 alter table cuentas_ibkr add constraint cuentas_ibkr_codigo_cliente_fkey FOREIGN KEY (codigo_cliente) REFERENCES clientes(codigo_cliente) DEFERRABLE;
+alter table cuentas_ibkr add constraint cuentas_ibkr_codigo_ips_fijado_fkey FOREIGN KEY (codigo_ips_fijado) REFERENCES clientes(codigo_cliente) DEFERRABLE;
 alter table documentos_expediente add constraint documentos_expediente_reemplaza_a_fkey FOREIGN KEY (reemplaza_a) REFERENCES documentos_expediente(id);
 alter table ebr_evaluaciones add constraint ebr_evaluaciones_codigo_cliente_fkey FOREIGN KEY (codigo_cliente) REFERENCES clientes(codigo_cliente) DEFERRABLE;
 alter table ebr_evaluaciones add constraint ebr_evaluaciones_persona_id_fkey FOREIGN KEY (persona_id) REFERENCES personas(id) DEFERRABLE;
@@ -1687,6 +1829,8 @@ alter table propietario_real add constraint propietario_real_cuenta_ibkr_fkey FO
 alter table propietario_real add constraint propietario_real_persona_id_fkey FOREIGN KEY (persona_id) REFERENCES personas(id) DEFERRABLE;
 alter table rendimientos_horizonte add constraint rendimientos_horizonte_cuenta_ibkr_fkey FOREIGN KEY (cuenta_ibkr) REFERENCES cuentas_ibkr(cuenta_ibkr) DEFERRABLE;
 alter table rendimientos_horizonte add constraint rendimientos_horizonte_sync_id_fkey FOREIGN KEY (sync_id) REFERENCES sync_ibkr(id);
+alter table semaforo_evaluaciones add constraint semaforo_evaluaciones_cuenta_ibkr_fkey FOREIGN KEY (cuenta_ibkr) REFERENCES cuentas_ibkr(cuenta_ibkr) DEFERRABLE;
+alter table semaforo_evaluaciones add constraint semaforo_evaluaciones_sync_id_fkey FOREIGN KEY (sync_id) REFERENCES sync_ibkr(id);
 alter table transaccionalidad add constraint transaccionalidad_codigo_cliente_fkey FOREIGN KEY (codigo_cliente) REFERENCES clientes(codigo_cliente) DEFERRABLE;
 alter table transaccionalidad add constraint transaccionalidad_cuenta_ibkr_fkey FOREIGN KEY (cuenta_ibkr) REFERENCES cuentas_ibkr(cuenta_ibkr) DEFERRABLE;
 CREATE INDEX bitacora_entidad_idx ON public.bitacora USING btree (entidad, entidad_id, created_at DESC);
@@ -1713,12 +1857,52 @@ CREATE UNIQUE INDEX posiciones_por_ticker ON public.posiciones_detalle USING btr
 CREATE INDEX posiciones_sync ON public.posiciones_detalle USING btree (sync_id);
 CREATE UNIQUE INDEX posiciones_un_nav ON public.posiciones_detalle USING btree (cuenta_ibkr, fecha_foto) WHERE (tipo_renglon = 'nav_ibkr'::text);
 CREATE INDEX rendimientos_sync ON public.rendimientos_horizonte USING btree (sync_id);
+CREATE INDEX semaforo_por_cuenta ON public.semaforo_evaluaciones USING btree (cuenta_ibkr, fecha_foto DESC, evaluado_en DESC);
 CREATE UNIQUE INDEX uq_bloqueo_abierto_por_cliente ON public.cliente_bloqueos USING btree (codigo_cliente) WHERE (levantado_en IS NULL);
 CREATE UNIQUE INDEX uq_cuenta_un_titular ON public.cuenta_titulares USING btree (cuenta_ibkr) WHERE (rol = 'titular'::text);
 CREATE UNIQUE INDEX uq_documentos_reemplazo_unico ON public.documentos_expediente USING btree (reemplaza_a) WHERE (reemplaza_a IS NOT NULL);
 CREATE UNIQUE INDEX uq_kyc_por_persona ON public.kyc_detalle USING btree (persona_id) WHERE (persona_id IS NOT NULL);
 CREATE UNIQUE INDEX uq_pep_por_persona ON public.pep_listas USING btree (persona_id) WHERE (persona_id IS NOT NULL);
 CREATE UNIQUE INDEX uq_perfil_por_persona ON public.perfil_riesgo USING btree (persona_id) WHERE (persona_id IS NOT NULL);
+create view public.v_comite_cartera with (security_invoker=true) as  SELECT ci.codigo_cliente,
+    ci.tipo,
+    ci.es_propia,
+    e.fecha_foto,
+    e.estado,
+    (e.metricas ->> 'moneda_base'::text) AS moneda_base,
+    ((e.metricas ->> 'nav_base'::text))::numeric AS nav_base,
+    ((e.metricas ->> 'nav_mxn'::text))::numeric AS nav_mxn,
+    (e.perfil_aplicado ->> 'perfil'::text) AS perfil,
+    (e.perfil_aplicado ->> 'origen'::text) AS origen_perfil,
+    ( SELECT count(*) AS count
+           FROM jsonb_array_elements(e.hallazgos) h(value)
+          WHERE ((h.value ->> 'severidad'::text) = 'critico'::text)) AS criticos,
+    ( SELECT count(*) AS count
+           FROM jsonb_array_elements(e.hallazgos) h(value)
+          WHERE ((h.value ->> 'severidad'::text) = 'incumple'::text)) AS incumplimientos,
+    ( SELECT count(*) AS count
+           FROM jsonb_array_elements(e.hallazgos) h(value)
+          WHERE ((h.value ->> 'severidad'::text) = 'aviso'::text)) AS avisos,
+    (jsonb_array_length(e.ips_pendiente) > 0) AS actualizacion_ips_pendiente,
+    e.version_motor,
+    e.evaluado_en
+   FROM (( SELECT DISTINCT ON (semaforo_evaluaciones.cuenta_ibkr) semaforo_evaluaciones.id,
+            semaforo_evaluaciones.sync_id,
+            semaforo_evaluaciones.fecha_foto,
+            semaforo_evaluaciones.cuenta_ibkr,
+            semaforo_evaluaciones.estado,
+            semaforo_evaluaciones.hallazgos,
+            semaforo_evaluaciones.metricas,
+            semaforo_evaluaciones.perfil_aplicado,
+            semaforo_evaluaciones.limites_aplicados,
+            semaforo_evaluaciones.ips_pendiente,
+            semaforo_evaluaciones.tipo_cambio,
+            semaforo_evaluaciones.version_motor,
+            semaforo_evaluaciones.evaluado_por,
+            semaforo_evaluaciones.evaluado_en
+           FROM semaforo_evaluaciones
+          ORDER BY semaforo_evaluaciones.cuenta_ibkr, semaforo_evaluaciones.fecha_foto DESC, semaforo_evaluaciones.evaluado_en DESC) e
+     JOIN cuentas_ibkr ci USING (cuenta_ibkr));
 CREATE TRIGGER trg_bitacora AFTER INSERT OR DELETE OR UPDATE ON public.beneficiarios FOR EACH ROW EXECUTE FUNCTION fn_bitacora();
 CREATE TRIGGER trg_bitacora AFTER INSERT OR DELETE OR UPDATE ON public.catalogo_instrumentos FOR EACH ROW EXECUTE FUNCTION fn_bitacora();
 CREATE CONSTRAINT TRIGGER trg_catalogo_mixto AFTER INSERT OR UPDATE OF clase_activo ON public.catalogo_instrumentos DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION fn_validar_prorrateo();
@@ -1753,8 +1937,13 @@ CREATE TRIGGER trg_bitacora AFTER INSERT OR DELETE OR UPDATE ON public.propietar
 CREATE TRIGGER trg_bitacora AFTER INSERT OR DELETE OR UPDATE ON public.reglas_perfil FOR EACH ROW EXECUTE FUNCTION fn_bitacora();
 CREATE TRIGGER trg_solo_agregar BEFORE DELETE OR UPDATE ON public.rendimientos_horizonte FOR EACH ROW EXECUTE FUNCTION fn_solo_agregar();
 CREATE TRIGGER trg_solo_agregar_truncate BEFORE TRUNCATE ON public.rendimientos_horizonte FOR EACH STATEMENT EXECUTE FUNCTION fn_solo_agregar();
+CREATE TRIGGER trg_solo_agregar BEFORE DELETE OR UPDATE ON public.semaforo_evaluaciones FOR EACH ROW EXECUTE FUNCTION fn_solo_agregar();
+CREATE TRIGGER trg_solo_agregar_truncate BEFORE TRUNCATE ON public.semaforo_evaluaciones FOR EACH STATEMENT EXECUTE FUNCTION fn_solo_agregar();
 CREATE TRIGGER trg_solo_agregar BEFORE DELETE OR UPDATE ON public.sync_ibkr FOR EACH ROW EXECUTE FUNCTION fn_solo_agregar();
 CREATE TRIGGER trg_solo_agregar_truncate BEFORE TRUNCATE ON public.sync_ibkr FOR EACH STATEMENT EXECUTE FUNCTION fn_solo_agregar();
+CREATE TRIGGER trg_bitacora AFTER INSERT OR DELETE OR UPDATE ON public.tipo_cambio FOR EACH ROW EXECUTE FUNCTION fn_bitacora();
+CREATE TRIGGER trg_solo_agregar BEFORE DELETE OR UPDATE ON public.tipo_cambio FOR EACH ROW EXECUTE FUNCTION fn_solo_agregar();
+CREATE TRIGGER trg_solo_agregar_truncate BEFORE TRUNCATE ON public.tipo_cambio FOR EACH STATEMENT EXECUTE FUNCTION fn_solo_agregar();
 CREATE TRIGGER trg_bitacora AFTER INSERT OR DELETE OR UPDATE ON public.transaccionalidad FOR EACH ROW EXECUTE FUNCTION fn_bitacora();
 alter table public.beneficiarios enable row level security;
 alter table public.bitacora enable row level security;
@@ -1790,7 +1979,9 @@ alter table public.posiciones_detalle enable row level security;
 alter table public.propietario_real enable row level security;
 alter table public.reglas_perfil enable row level security;
 alter table public.rendimientos_horizonte enable row level security;
+alter table public.semaforo_evaluaciones enable row level security;
 alter table public.sync_ibkr enable row level security;
+alter table public.tipo_cambio enable row level security;
 alter table public.transaccionalidad enable row level security;
 create policy benef_insert_auth on public.beneficiarios as permissive for insert to authenticated with check (true);
 create policy benef_select_auth on public.beneficiarios as permissive for select to authenticated using (true);
@@ -1848,7 +2039,9 @@ create policy prop_select_auth on public.propietario_real as permissive for sele
 create policy prop_update_auth on public.propietario_real as permissive for update to authenticated using (true) with check (true);
 create policy reglas_perfil_select_auth on public.reglas_perfil as permissive for select to authenticated using (true);
 create policy rendimientos_horizonte_select_auth on public.rendimientos_horizonte as permissive for select to authenticated using (true);
+create policy semaforo_evaluaciones_select_auth on public.semaforo_evaluaciones as permissive for select to authenticated using (true);
 create policy sync_ibkr_select_auth on public.sync_ibkr as permissive for select to authenticated using (true);
+create policy tipo_cambio_select_auth on public.tipo_cambio as permissive for select to authenticated using (true);
 create policy transacc_insert_auth on public.transaccionalidad as permissive for insert to authenticated with check (true);
 create policy transacc_select_auth on public.transaccionalidad as permissive for select to authenticated using (true);
 create policy transacc_update_auth on public.transaccionalidad as permissive for update to authenticated using (true) with check (true);
@@ -2384,9 +2577,15 @@ grant SELECT on public.reglas_perfil to service_role;
 revoke all on public.rendimientos_horizonte from public, anon, authenticated, service_role;
 grant SELECT on public.rendimientos_horizonte to authenticated;
 grant SELECT on public.rendimientos_horizonte to service_role;
+revoke all on public.semaforo_evaluaciones from public, anon, authenticated, service_role;
+grant SELECT on public.semaforo_evaluaciones to authenticated;
+grant SELECT on public.semaforo_evaluaciones to service_role;
 revoke all on public.sync_ibkr from public, anon, authenticated, service_role;
 grant SELECT on public.sync_ibkr to authenticated;
 grant SELECT on public.sync_ibkr to service_role;
+revoke all on public.tipo_cambio from public, anon, authenticated, service_role;
+grant SELECT on public.tipo_cambio to authenticated;
+grant SELECT on public.tipo_cambio to service_role;
 revoke all on public.transaccionalidad from public, anon, authenticated, service_role;
 grant DELETE on public.transaccionalidad to anon;
 grant DELETE on public.transaccionalidad to authenticated;
@@ -2412,6 +2611,9 @@ grant TRUNCATE on public.transaccionalidad to service_role;
 grant UPDATE on public.transaccionalidad to anon;
 grant UPDATE on public.transaccionalidad to authenticated;
 grant UPDATE on public.transaccionalidad to service_role;
+revoke all on public.v_comite_cartera from public, anon, authenticated, service_role;
+grant SELECT on public.v_comite_cartera to authenticated;
+grant SELECT on public.v_comite_cartera to service_role;
 revoke all on function fn_archivar_bloqueos() from public, anon, authenticated, service_role;
 grant execute on function fn_archivar_bloqueos() to service_role;
 revoke all on function fn_archivar_cuenta_titulares() from public, anon, authenticated, service_role;
@@ -2442,6 +2644,10 @@ grant execute on function fn_registrar_consulta_documento(uuid) to service_role;
 revoke all on function fn_registrar_documento(text,text,text,text,integer,date,uuid) from public, anon, authenticated, service_role;
 grant execute on function fn_registrar_documento(text,text,text,text,integer,date,uuid) to authenticated;
 grant execute on function fn_registrar_documento(text,text,text,text,integer,date,uuid) to service_role;
+revoke all on function fn_registrar_semaforo(jsonb) from public, anon, authenticated, service_role;
+grant execute on function fn_registrar_semaforo(jsonb) to authenticated;
+revoke all on function fn_registrar_tipo_cambio(text,date,numeric,date,text,text) from public, anon, authenticated, service_role;
+grant execute on function fn_registrar_tipo_cambio(text,date,numeric,date,text,text) to authenticated;
 revoke all on function fn_resolver_coincidencia(uuid,text,text,text,text) from public, anon, authenticated, service_role;
 grant execute on function fn_resolver_coincidencia(uuid,text,text,text,text) to authenticated;
 grant execute on function fn_resolver_coincidencia(uuid,text,text,text,text) to service_role;

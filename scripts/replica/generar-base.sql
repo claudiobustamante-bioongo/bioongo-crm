@@ -76,6 +76,16 @@ with ddl(orden, sub, linea) as (
    where c.relnamespace = 'public'::regnamespace
      and not exists (select 1 from pg_constraint k where k.conindid = i.indexrelid)
 
+  -- 5b · Vistas (desde 2026-11-16: v_comite_cartera), con sus opciones
+  --      (security_invoker); van después de tablas, FK e índices. «zzzz» las deja
+  --      al final de la sección 5 en cualquier collation.
+  union all
+  select 5, 'zzzz' || c.relname,
+         'create view public.' || quote_ident(c.relname)
+         || coalesce(' with (' || array_to_string(c.reloptions, ', ') || ')', '')
+         || ' as ' || pg_get_viewdef(c.oid)
+    from pg_class c where c.relnamespace = 'public'::regnamespace and c.relkind = 'v'
+
   -- 6 · Triggers
   union all
   select 6, tgrelid::regclass::text || tgname, pg_get_triggerdef(oid) || ';'
@@ -102,13 +112,13 @@ with ddl(orden, sub, linea) as (
   union all
   select 9, c.relname || '0',
          'revoke all on public.' || quote_ident(c.relname) || ' from public, anon, authenticated, service_role;'
-    from pg_class c where c.relnamespace = 'public'::regnamespace and c.relkind = 'r'
+    from pg_class c where c.relnamespace = 'public'::regnamespace and c.relkind in ('r', 'v')
   union all
   select 9, c.relname || '1' || x.privilege_type || x.grantee::text,
          'grant ' || x.privilege_type || ' on public.' || quote_ident(c.relname) || ' to '
          || case when x.grantee = 0 then 'public' else quote_ident(x.grantee::regrole::text) end || ';'
     from pg_class c, aclexplode(c.relacl) x
-   where c.relnamespace = 'public'::regnamespace and c.relkind = 'r'
+   where c.relnamespace = 'public'::regnamespace and c.relkind in ('r', 'v')
      and (x.grantee = 0 or x.grantee::regrole::text in ('anon', 'authenticated', 'service_role'))
 
   -- 10 · Grants de funciones

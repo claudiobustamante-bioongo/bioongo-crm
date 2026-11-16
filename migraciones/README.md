@@ -212,6 +212,7 @@ columnas de `public` que guardan un código de cliente.
 | `listas_coincidencias` | `codigo_cliente` |
 | `personas` | `codigo_ficha`, `codigo_kyc`, `codigo_pep`, `codigo_ips`, `codigo_ebr` |
 | `cuentas_ibkr` | `codigo_cliente` (el código de contrato de la cuenta) |
+| `cuentas_ibkr` | `codigo_ips_fijado` (el código cuyo IPS aplica a la cuenta por decisión; desde 2026-11-16-01-semaforo-esquema.sql) |
 
 Las dos últimas nacieron el 19-oct-2026 (`2026-10-16-persona-cuenta-bloque1-expand.sql`),
 también `DEFERRABLE INITIALLY IMMEDIATE`. Olvidar un puntero de `personas` en un

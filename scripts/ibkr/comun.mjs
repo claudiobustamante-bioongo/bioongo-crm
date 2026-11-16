@@ -12,9 +12,18 @@ import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { XMLParser } from 'fast-xml-parser';
 
+// Además, las libs importan relativos SIN extensión (como resuelve Next); para Node,
+// un relativo sin extensión desde un .ts se prueba con «.ts».
 registerHooks({
   resolve(especificador, contexto, siguiente) {
     if (especificador === 'server-only') return { url: 'data:text/javascript,', shortCircuit: true };
+    if (/^\.\.?\//.test(especificador) && !/\.[a-z]+$/i.test(especificador) && contexto.parentURL?.endsWith('.ts')) {
+      try {
+        return siguiente(`${especificador}.ts`, contexto);
+      } catch {
+        // si no existe con .ts, que falle con el error original
+      }
+    }
     return siguiente(especificador, contexto);
   },
 });
@@ -82,16 +91,21 @@ const SQL_REFERENCIA = `select json_build_object(
   'prorrateo', (select json_agg(json_build_object('ticker', ticker, 'clase_activo', clase_activo, 'factor', factor)
       order by ticker, clase_activo) from public.catalogo_prorrateo))`;
 
-/** Lee la referencia del CRM con psql en una transacción READ ONLY. No escribe nada. */
-export function referenciaDesdePsql() {
+/** Una consulta que devuelve UN valor JSON, con psql en una transacción READ ONLY. No escribe nada. */
+export function consultaSoloLectura(sql, que = 'la consulta') {
   let salida;
   try {
     salida = execFileSync('psql', ['service=bioongo', '-X', '-q', '-A', '-t', '-v', 'ON_ERROR_STOP=1',
-      '-c', 'begin transaction read only', '-c', SQL_REFERENCIA, '-c', 'rollback'], { encoding: 'utf8' });
+      '-c', 'begin transaction read only', '-c', sql, '-c', 'rollback'], { encoding: 'utf8' });
   } catch (e) {
-    throw new ErrorScript(`No se pudo leer la referencia del CRM con psql: ${e.stderr?.toString().trim() || e.message}`);
+    throw new ErrorScript(`No se pudo leer ${que} con psql: ${e.stderr?.toString().split('\n').find((l) => /ERROR/.test(l))?.trim() || e.message}`);
   }
   return JSON.parse(salida.trim());
+}
+
+/** Lee la referencia del CRM con psql en una transacción READ ONLY. No escribe nada. */
+export function referenciaDesdePsql() {
+  return consultaSoloLectura(SQL_REFERENCIA, 'la referencia del CRM');
 }
 
 export function referenciaDesdeArchivo(ruta) {
