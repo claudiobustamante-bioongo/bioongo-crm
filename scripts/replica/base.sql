@@ -1,7 +1,7 @@
 -- ============================================================================
 -- base.sql · réplica PGlite · SOLO ESQUEMA de public, sin una fila de datos.
--- Última migración incluida: 2026-11-16-01-semaforo-esquema.sql (según la bitácora)
--- Generado desde el catálogo de producción el 2026-11-16 11:26 (CDMX)
+-- Última migración incluida: 2026-11-16-02-ips-fijado-cspmu1062.sql (según la bitácora)
+-- Generado desde el catálogo de producción el 2026-11-16 11:51 (CDMX)
 -- con scripts/replica/generar-base.sql. No se edita a mano: se regenera.
 -- ============================================================================
 set check_function_bodies = off;
