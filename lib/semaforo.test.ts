@@ -19,7 +19,8 @@ const CATALOGO = armarCatalogo([
   e('ZZACC', 'ACC_SIC'), e('ZZMX', 'ACC_BMV'),
   e('ZZGOBL', 'GOB_EXT', { duracion_efectiva: 7 }), e('ZZGOBC', 'GOB_EXT', { duracion_efectiva: 1.85 }),
   e('ZZGOBN', 'GOB_EXT'), e('ZZBIL', 'GOB_EXT', { es_equivalente_efectivo: true, duracion_efectiva: 0.15 }),
-  e('ZZORO', 'COMMODITY', { elegible: false }), e('ZZCORP', 'CORP_IG'),
+  e('ZZBILN', 'GOB_EXT', { es_equivalente_efectivo: true }), e('ZZGOB3', 'GOB_EXT', { duracion_efectiva: 3 }),
+  e('ZZORO', 'COMMODITY', { elegible: false }), e('ZZCORP', 'CORP_IG'), e('ZZCORPC', 'CORP_IG', { duracion_efectiva: 1.5 }),
 ], []);
 
 const M4: ParametrosM4 = {
@@ -175,6 +176,36 @@ test('P2: techo por clase del perfil (Bajo, ACC_SIC 30 % > 20 %) con su origen',
   assert.deepEqual([p2?.clase, p2?.valor_pct, p2?.limite_pct, p2?.origenes], ['ACC_SIC', 30, 20, ['perfil:Bajo']]);
 });
 
+// P2 en deuda gubernamental (1.1.0): Moderado, techo GOB_EXT 70 %. Cartera: 10 % ZZACC, 80 % gobierno, 10 % caja.
+const gob = (...g: RenglonPosicion[]) => evaluarCuenta(entrada({ renglones: [pos('ZZACC', 10_000), ...g, caja(10_000)] }));
+const p2De = (ev: ReturnType<typeof evaluarCuenta>) => ev.hallazgos.filter((h) => h.prueba === 'P2');
+
+test('P2 gobierno: exceso en duración < 3 o en equivalentes → aviso «más conservadora» (ÁMBAR)', () => {
+  for (const ev of [gob(pos('ZZGOBC', 80_000)), gob(pos('ZZBIL', 80_000)), gob(pos('ZZBILN', 80_000))]) {
+    assert.deepEqual([ev.estado, pruebas(ev)], ['AMBAR', ['P2:aviso']]);
+    assert.match(p2De(ev)[0].mensaje, /más conservadora que su perfil \(desalineada con el mandato\)/);
+    assert.equal(p2De(ev)[0].larga_duracion_pct, 0);
+  }
+});
+
+test('P2 gobierno: la parte larga cabe en el techo y el exceso es corto → aviso', () => {
+  const ev = gob(pos('ZZGOBL', 70_000), pos('ZZGOBC', 10_000)); // larga 70 = techo; exceso 10 en 1.85
+  assert.deepEqual([ev.estado, pruebas(ev), p2De(ev)[0].larga_duracion_pct], ['AMBAR', ['P2:aviso'], 70]);
+});
+
+test('P2 gobierno: exceso con duración ≥ 3 (incluida exactamente 3) o nula → incumple «larga duración» (ROJO)', () => {
+  for (const [ev, larga] of [[gob(pos('ZZGOBL', 75_000), pos('ZZGOBC', 5_000)), 75], [gob(pos('ZZGOBN', 80_000)), 80],
+    [gob(pos('ZZGOB3', 80_000)), 80]] as const) {
+    assert.deepEqual([ev.estado, pruebas(ev), p2De(ev)[0].larga_duracion_pct], ['ROJO', ['P2:incumple'], larga]);
+    assert.match(p2De(ev)[0].mensaje, /exceso de deuda gubernamental de larga duración/);
+  }
+});
+
+test('P2 fuera de gobierno: todo exceso sigue incumpliendo (CORP_IG corto no se dispensa)', () => {
+  const ev = evaluarCuenta(entrada({ renglones: [pos('ZZACC', 10_000), pos('ZZCORPC', 60_000), pos('ZZGOBC', 20_000), caja(10_000)] }));
+  assert.deepEqual(pruebas(ev), ['P2:incumple']);
+});
+
 test('P2/P5: RV total, con el más restrictivo entre la fase y rv_total_max del perfil', () => {
   // Bajo en Acumulación: fase permite 75, el perfil 20 → manda el perfil. ACC_BMV 10 + ACC_SIC 15 = 25.
   const ev = evaluarCuenta(entrada({ perfil: perfilOk('Bajo'), renglones: [pos('ZZMX', 10_000), pos('ZZACC', 15_000), pos('ZZGOBC', 65_000), caja(10_000)] }));
@@ -221,7 +252,10 @@ test('saldo deudor: ≤ 1 % aviso (ÁMBAR); > 1 % incumple (ROJO)', () => {
 
 test('la evaluación guarda la versión del motor, el perfil y los límites aplicados', () => {
   const ev = evaluarCuenta(entrada({}));
-  assert.equal(ev.version_motor, 'semaforo-1.0.0');
+  assert.equal(ev.version_motor, 'semaforo-1.1.0');
   assert.equal((ev.perfil_aplicado as { perfil: string }).perfil, 'Moderado');
   assert.ok('rv_max' in ev.limites_aplicados && 'techos' in ev.limites_aplicados);
+  const regla = (ev.limites_aplicados as { gob_exceso_corto: { duracion_menor_a: number; decision: string } }).gob_exceso_corto;
+  assert.equal(regla.duracion_menor_a, 3);
+  assert.match(regla.decision, /Asesor \(16-nov-2026\).*Oficial de Cumplimiento/);
 });

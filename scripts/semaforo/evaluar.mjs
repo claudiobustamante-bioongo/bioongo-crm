@@ -10,12 +10,21 @@
 // --ips-fijado  Solo en seco: simula codigo_ips_fijado antes de la migración B
 //               (p. ej. CSPMU1062=CSPMU1062).
 // --referencia  JSON con los mismos datos (pruebas con datos sintéticos).
+// --registrar   «sí»: además de mostrarla, REGISTRA la corrida en
+//               semaforo_evaluaciones por fn_registrar_semaforo con tu sesión
+//               (--usuario): ensayo (ROLLBACK) → confirmación (CARGAR con
+//               terminal interactiva; si no, una clave y una segunda corrida con
+//               --confirmar <clave> que exige los mismos estados y hallazgos) →
+//               real (COMMIT). No admite --fix, --ips-fijado ni --referencia: se
+//               registra solo lo que dice la base.
 // La salida va por código de cliente; sin nombres ni números de cuenta.
-import { ErrorScript, consultaSoloLectura, fmt, leerArgs, lista, referenciaDesdeArchivo } from '../ibkr/comun.mjs';
+import { createInterface } from 'node:readline/promises';
+import { ErrorScript, consultaSoloLectura, fmt, leerArgs, lista, psqlGuion, referenciaDesdeArchivo } from '../ibkr/comun.mjs';
 
 const { armarCatalogo } = await import('../../lib/clasificacion-activos.ts');
 const { resolverPerfilCuenta } = await import('../../lib/perfil-cuenta.ts');
 const { evaluarCuenta, VERSION_MOTOR } = await import('../../lib/semaforo.ts');
+const registro = await import('../../lib/semaforo-registro.ts');
 
 const SQL = (sync) => `
 with s as (
@@ -61,7 +70,14 @@ const SQL_FIX = (td) => `select coalesce((select json_build_object('fecha', fech
 
 try {
   const args = leerArgs(process.argv.slice(2));
-  if (args.registrar) throw new ErrorScript('--registrar llega con la migración (A): por ahora solo hay corrida en seco.');
+  const registrar = args.registrar === 'sí' || args.registrar === 'si';
+  if (args.registrar && !registrar) throw new ErrorScript('--registrar se escribe «--registrar sí».');
+  if (registrar) {
+    if (!args.usuario) throw new ErrorScript('Para registrar falta --usuario <correo>: es quien firma.');
+    if (args.fix || args['ips-fijado'] || args.referencia) {
+      throw new ErrorScript('--fix, --ips-fijado y --referencia son solo de la corrida en seco: no se registran supuestos.');
+    }
+  }
   if (args.sync && !/^[0-9a-f-]{36}$/.test(args.sync)) throw new ErrorScript('--sync debe ser un uuid.');
   const d = args.referencia ? referenciaDesdeArchivo(args.referencia) : consultaSoloLectura(SQL(args.sync), 'los datos del semáforo');
   if (!d.sync) throw new ErrorScript('No hay ninguna foto_diaria cargada.');
@@ -108,6 +124,7 @@ try {
   if (fijadosSeco.size) console.log(`   IPS fijado simulado: ${[...fijadosSeco].map(([a, b]) => `${a}→${b}`).join(', ')}`);
 
   const conteo = new Map();
+  const evaluaciones = [];
   for (const c of universo) {
     const ips = c.codigo_ips_fijado ?? fijadosSeco.get(c.codigo_cliente) ?? null;
     const perfil = resolverPerfilCuenta({ cuenta_ibkr: c.cuenta_ibkr, tipo: c.tipo, titulares: titularesDe.get(c.cuenta_ibkr) ?? [],
@@ -118,6 +135,7 @@ try {
       renglones: filas.filter((r) => r.tipo_renglon !== 'nav_ibkr') } : null;
     const ev = evaluarCuenta({ cuenta_ibkr: c.cuenta_ibkr, es_propia: c.es_propia, perfil, foto, tipo_cambio: fix, catalogo, parametros: M4 });
     conteo.set(ev.estado, (conteo.get(ev.estado) ?? 0) + 1);
+    evaluaciones.push({ ...ev, ips_pendiente: perfil.ok ? perfil.ips_pendiente : [] });
 
     const perf = perfil.ok ? `${perfil.perfil} (${perfil.origen}: ${perfil.fuentes.join(' + ')}; fases ${perfil.fases.map((f) => f.fase).join('/')})`
       : `sin perfil: ${perfil.motivo}${perfil.faltantes.length ? ` (${perfil.faltantes.join(', ')})` : ''}`;
@@ -131,7 +149,34 @@ try {
     if (perfil.ok && perfil.ips_pendiente.length) console.log(`             (actualización de IPS pendiente: ${perfil.ips_pendiente.join('; ')})`);
   }
   console.log(`\n== Resumen: ${lista([...conteo].sort().map(([k, v]) => `${k} ${v}`))}`);
-  console.log('Corrida en seco: nada se escribió en la base.');
+
+  if (!registrar) {
+    console.log('Corrida en seco: nada se escribió en la base.');
+    process.exit(0);
+  }
+
+  const lote = registro.armarLote(d.sync.id, fix, evaluaciones);
+  const clave = registro.claveSemaforo(lote);
+  console.log(`\n== REGISTRO · carga ${d.sync.id} · ${lote.evaluaciones.length} evaluaciones · FIX ${fix ?? '—'} · clave ${clave}`);
+  console.log('Ensayo (ROLLBACK)…');
+  console.log(`  ${JSON.stringify(psqlGuion(registro.sqlRegistroSemaforo(lote, 'ensayo', args.usuario)))}`);
+
+  if (args.confirmar) {
+    if (args.confirmar !== clave) throw new ErrorScript('La clave no coincide con los estados y hallazgos de esta corrida: no se registra.');
+  } else if (process.stdin.isTTY) {
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const r = await rl.question(`\nEscribe CARGAR para registrar el semáforo de la foto del ${td}: `);
+    rl.close();
+    if (r.trim() !== 'CARGAR') { console.log('No se confirmó: no se registró nada.'); process.exit(0); }
+  } else {
+    console.log(`\nNada se escribió. Para registrar, repite el comando con --confirmar ${clave}`);
+    process.exit(0);
+  }
+
+  console.log('\nReal (COMMIT)…');
+  const real = psqlGuion(registro.sqlRegistroSemaforo(lote, 'real', args.usuario));
+  console.log(`  ${JSON.stringify(real)}`);
+  console.log(`\nSemáforo de la foto del ${td} registrado: ${real.resultado?.evaluaciones} evaluaciones.`);
 } catch (e) {
   console.error(`✗ ${e.message}`);
   process.exit(e instanceof ErrorScript ? e.codigoSalida : 1);

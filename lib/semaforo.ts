@@ -15,7 +15,14 @@
  * Pruebas:
  *   P1 elegibilidad: no elegible (COMMODITY, CRIPTO, APALANCADO, DERIVADO) o
  *      NO_CATALOGADO → crítico; fuera de catálogo con regla → aviso.
- *   P2 techo por clase (limites_perfil), sobre las clases elegibles.
+ *   P2 techo por clase (limites_perfil), sobre las clases elegibles. El exceso
+ *      → incumple, salvo en deuda gubernamental (GOB_MX, GOB_EXT) desde 1.1.0:
+ *      si el exceso está cubierto por equivalentes de efectivo o fracciones con
+ *      duración < 3 (la parte larga, duración ≥ 3 o nula y no equivalente, cabe
+ *      en el techo) → aviso «más conservadora que su perfil (desalineada con el
+ *      mandato)»; si no → incumple «exceso de deuda gubernamental de larga
+ *      duración». Decisión del Asesor del 16-nov-2026, pendiente de confirmar con
+ *      el Oficial de Cumplimiento.
  *   P3 duración: si el perfil tiene duracion_gob_menor_a, cada fracción GOB_MX y
  *      GOB_EXT con duración ≥ límite, o nula, incumple.
  *   P4 fase, con P5 (el límite más restrictivo de TODAS las fuentes, con
@@ -33,7 +40,14 @@
 import { clasificarRenglon, type Catalogo, type RenglonPosicion } from './clasificacion-activos';
 import type { PerfilCuenta } from './perfil-cuenta';
 
-export const VERSION_MOTOR = 'semaforo-1.0.0';
+export const VERSION_MOTOR = 'semaforo-1.1.0';
+
+/** P2 en GOB_MX/GOB_EXT: duración bajo la cual el exceso es «más conservador», no incumplimiento (1.1.0). */
+export const GOB_EXCESO_CORTO = {
+  duracion_menor_a: 3,
+  decision: 'Decisión del Asesor (16-nov-2026): el exceso sobre el techo de deuda gubernamental cubierto por '
+    + 'equivalentes de efectivo o duración < 3 es aviso; pendiente de confirmar con el Oficial de Cumplimiento.',
+} as const;
 
 export const ESTADOS = ['VERDE', 'AMBAR', 'ROJO', 'EXENTO', 'SIN_PERFIL', 'SIN_DATOS', 'INACTIVA'] as const;
 export type Estado = (typeof ESTADOS)[number];
@@ -47,6 +61,8 @@ export interface Hallazgo {
   ticker?: string;
   valor_pct?: number;
   limite_pct?: number;
+  /** P2 en deuda gubernamental: % de la parte de duración ≥ 3 o nula (no equivalente). */
+  larga_duracion_pct?: number;
   origenes?: string[];
 }
 
@@ -150,7 +166,7 @@ export function evaluarCuenta(e: EntradaEvaluacion): Evaluacion {
   // --- Clasificación ---
   const porClase = new Map<string, number>();
   let positiva = 0, negativa = 0, liquidez = 0;
-  const fracciones: { clase: string; valor: number; elegible: boolean; duracion: number | null; ticker: string }[] = [];
+  const fracciones: { clase: string; valor: number; elegible: boolean; equivalente: boolean; duracion: number | null; ticker: string }[] = [];
   for (const r of foto.renglones) {
     const k = clasificarRenglon(r, e.catalogo);
     for (const a of k.avisos) {
@@ -161,7 +177,8 @@ export function evaluarCuenta(e: EntradaEvaluacion): Evaluacion {
       positiva += f.valor_base;
       porClase.set(f.clase, (porClase.get(f.clase) ?? 0) + f.valor_base);
       if (f.liquidez) liquidez += f.valor_base;
-      fracciones.push({ clase: f.clase, valor: f.valor_base, elegible: f.elegible, duracion: f.duracion_efectiva, ticker: r.ticker });
+      fracciones.push({ clase: f.clase, valor: f.valor_base, elegible: f.elegible, equivalente: f.equivalente_efectivo,
+        duracion: f.duracion_efectiva, ticker: r.ticker });
     }
   }
   const pct = (v: number) => (positiva > 0 ? (v / positiva) * 100 : 0);
@@ -196,9 +213,25 @@ export function evaluarCuenta(e: EntradaEvaluacion): Evaluacion {
   for (const [clase, max] of Object.entries(techos)) {
     if (noElegibles.has(clase)) continue;
     const v = pct(porClase.get(clase) ?? 0);
-    if (v > max + EPS) {
-      hallazgos.push({ prueba: 'P2', severidad: 'incumple', clase, valor_pct: r2(v), limite_pct: max, origenes: [`perfil:${perfil.perfil}`],
-        mensaje: `${clase} ${r2(v)} % sobre el techo de ${max} % del perfil ${perfil.perfil}.` });
+    if (v <= max + EPS) continue;
+    const comun = { prueba: 'P2' as const, clase, valor_pct: r2(v), limite_pct: max, origenes: [`perfil:${perfil.perfil}`] };
+    const texto = `${clase} ${r2(v)} % sobre el techo de ${max} % del perfil ${perfil.perfil}`;
+    if (!GOB_DURACION.includes(clase)) {
+      hallazgos.push({ ...comun, severidad: 'incumple', mensaje: `${texto}.` });
+      continue;
+    }
+    // Deuda gubernamental: ¿la parte larga (no equivalente, duración ≥ 3 o nula) cabe en el techo?
+    const larga = pct(fracciones
+      .filter((f) => f.clase === clase && !f.equivalente && (f.duracion === null || f.duracion >= GOB_EXCESO_CORTO.duracion_menor_a))
+      .reduce((s, f) => s + f.valor, 0));
+    if (larga <= max + EPS) {
+      hallazgos.push({ ...comun, severidad: 'aviso', larga_duracion_pct: r2(larga),
+        mensaje: `${texto}: más conservadora que su perfil (desalineada con el mandato); el exceso está en equivalentes `
+          + `de efectivo o duración < ${GOB_EXCESO_CORTO.duracion_menor_a}.` });
+    } else {
+      hallazgos.push({ ...comun, severidad: 'incumple', larga_duracion_pct: r2(larga),
+        mensaje: `${texto}: exceso de deuda gubernamental de larga duración (duración ≥ ${GOB_EXCESO_CORTO.duracion_menor_a} `
+          + `o nula: ${r2(larga)} %).` });
     }
   }
 
@@ -245,6 +278,7 @@ export function evaluarCuenta(e: EntradaEvaluacion): Evaluacion {
 
   const limites_aplicados = { techos, rv_max: rvMax, rf_min: rfMin, liquidez_min: liqMin,
     duracion_gob_menor_a: reglas.duracion_gob_menor_a, efectivo_cuenta_rf: reglas.efectivo_cuenta_rf,
+    gob_exceso_corto: GOB_EXCESO_CORTO,
     saldo_deudor_tolerancia_pct: e.parametros.saldoDeudorToleranciaPct, nav_residual_mxn: e.parametros.navResidualMxn };
 
   if (e.es_propia) {
