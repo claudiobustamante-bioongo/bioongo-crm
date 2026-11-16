@@ -9,7 +9,7 @@
 //   antes de llamar a IBKR. Las cuentas sin contrato se muestran como U••••1234.
 import { registerHooks } from 'node:module';
 import { readFileSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { XMLParser } from 'fast-xml-parser';
 
 // Además, las libs importan relativos SIN extensión (como resuelve Next); para Node,
@@ -101,6 +101,21 @@ export function consultaSoloLectura(sql, que = 'la consulta') {
     throw new ErrorScript(`No se pudo leer ${que} con psql: ${e.stderr?.toString().split('\n').find((l) => /ERROR/.test(l))?.trim() || e.message}`);
   }
   return JSON.parse(salida.trim());
+}
+
+/**
+ * Corre un guion por stdin con `psql service=bioongo` y devuelve la última línea
+ * como JSON. Lo usan los scripts que escriben con confirmación (cargar-foto,
+ * fix); el guion lleva su propio BEGIN y ROLLBACK/COMMIT. Del error solo se
+ * muestra la primera línea, sin el contenido del guion.
+ */
+export function psqlGuion(guion) {
+  const r = spawnSync('psql', ['service=bioongo', '-X', '-q', '-A', '-t', '-f', '-'], { input: guion, encoding: 'utf8' });
+  if (r.status !== 0) {
+    const linea = (r.stderr ?? '').split('\n').find((l) => /ERROR|FATAL|error/.test(l)) ?? 'psql terminó con error';
+    throw new ErrorScript(`psql: ${linea.trim()}`);
+  }
+  return JSON.parse(r.stdout.trim().split('\n').filter(Boolean).pop());
 }
 
 /** Lee la referencia del CRM con psql en una transacción READ ONLY. No escribe nada. */

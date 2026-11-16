@@ -18,24 +18,13 @@
 //      son exactamente las mismas.
 //   7. REAL: la misma llamada con COMMIT.
 // Con --xml no se toca la base (pasos 5–7 omitidos): solo para probar.
-import { spawnSync } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
 import {
   ErrorScript, catalogoConAltas, descargar, flex, hoyCdmx, imprimirVistaPrevia, leerArgs, lista,
-  prepararVistaPrevia, referenciaDesdeArchivo, referenciaDesdePsql, ultimoHabil,
+  prepararVistaPrevia, psqlGuion as psql, referenciaDesdeArchivo, referenciaDesdePsql, ultimoHabil,
 } from './comun.mjs';
 
 const carga = await import('../../lib/ibkr-carga.ts');
-
-/** psql con el guion por stdin. Solo se muestra la primera línea del error (sin el payload). */
-function psql(guion) {
-  const r = spawnSync('psql', ['service=bioongo', '-X', '-q', '-A', '-t', '-f', '-'], { input: guion, encoding: 'utf8' });
-  if (r.status !== 0) {
-    const linea = (r.stderr ?? '').split('\n').find((l) => /ERROR|FATAL|error/.test(l)) ?? 'psql terminó con error';
-    throw new ErrorScript(`psql: ${linea.trim()}`);
-  }
-  return JSON.parse(r.stdout.trim().split('\n').filter(Boolean).pop());
-}
 
 try {
   const args = leerArgs(process.argv.slice(2));
