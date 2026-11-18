@@ -28,6 +28,7 @@ registerHooks({
   },
 });
 export const flex = await import('../../lib/ibkr-flex.ts');
+const reglasCarga = await import('../../lib/ibkr-carga-reglas.ts');
 const { armarCatalogo, clasificarRenglon } = await import('../../lib/clasificacion-activos.ts');
 
 export const QUERY_BIOONGO = '1649340';
@@ -150,11 +151,8 @@ export function catalogoConAltas(ref, rutasAltas) {
  * (cuentas_ibkr.fecha_cierre) o un contrato de baja cuentan como baja.
  */
 export function crmParaDescuadres(ref) {
-  return (ref.cuentas ?? []).map((c) => ({
-    cuenta_ibkr: c.cuenta_ibkr,
-    codigo_cliente: c.codigo_cliente,
-    fecha_baja: c.fecha_cierre ?? c.fecha_baja ?? (c.status === 'baja' ? 'sin fecha' : null),
-  }));
+  // La regla vive en lib/ibkr-carga-reglas.ts: la misma que usa la foto automática.
+  return reglasCarga.crmParaDescuadres(ref.cuentas ?? []);
 }
 
 // --- Descarga --------------------------------------------------------------------------------

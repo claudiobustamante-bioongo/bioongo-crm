@@ -10,7 +10,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import type { Evaluacion } from './semaforo';
+import type { Evaluacion } from './semaforo.ts';
 
 export interface EvaluacionConIps extends Evaluacion {
   ips_pendiente: string[];

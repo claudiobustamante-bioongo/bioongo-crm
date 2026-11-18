@@ -37,8 +37,8 @@
  * no debe depender de la tabla viva de M4.
  */
 
-import { clasificarRenglon, type Catalogo, type RenglonPosicion } from './clasificacion-activos';
-import type { PerfilCuenta } from './perfil-cuenta';
+import { clasificarRenglon, type Catalogo, type RenglonPosicion } from './clasificacion-activos.ts';
+import type { PerfilCuenta } from './perfil-cuenta.ts';
 
 export const VERSION_MOTOR = 'semaforo-1.1.0';
 

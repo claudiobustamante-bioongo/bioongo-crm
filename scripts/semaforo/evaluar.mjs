@@ -21,9 +21,7 @@
 import { createInterface } from 'node:readline/promises';
 import { ErrorScript, consultaSoloLectura, fmt, leerArgs, lista, psqlGuion, referenciaDesdeArchivo } from '../ibkr/comun.mjs';
 
-const { armarCatalogo } = await import('../../lib/clasificacion-activos.ts');
-const { resolverPerfilCuenta } = await import('../../lib/perfil-cuenta.ts');
-const { evaluarCuenta, VERSION_MOTOR } = await import('../../lib/semaforo.ts');
+const { correrSemaforo } = await import('../../lib/semaforo-corrida.ts');
 const registro = await import('../../lib/semaforo-registro.ts');
 
 const SQL = (sync) => `
@@ -93,50 +91,13 @@ try {
   if (fix !== null && !(fix > 0)) throw new ErrorScript('--fix debe ser un número positivo.');
 
   const fijadosSeco = new Map((args['ips-fijado'] ?? '').split(',').filter(Boolean).map((p) => p.split('=')));
-  const p = d.parametros;
-  const M4 = {
-    limitesFase: Object.fromEntries(Object.entries(d.limites_fase).map(([k, v]) => [k, {
-      rv_max_pct: Number(v.rv_max_pct), rf_min_pct: Number(v.rf_min_pct), liquidez_min_pct: Number(v.liquidez_min_pct) }])),
-    limitesPerfil: Object.fromEntries(Object.entries(d.limites_perfil).map(([k, v]) =>
-      [k, Object.fromEntries(Object.entries(v).map(([c, x]) => [c, Number(x)]))])),
-    reglasPerfil: Object.fromEntries(Object.entries(d.reglas_perfil).map(([k, v]) => [k, {
-      duracion_gob_menor_a: v.duracion_gob_menor_a === null ? null : Number(v.duracion_gob_menor_a),
-      liquidez_min_pct: Number(v.liquidez_min_pct), efectivo_cuenta_rf: v.efectivo_cuenta_rf, rv_total_max_pct: Number(v.rv_total_max_pct) }])),
-    navResidualMxn: Number(p.nav_residual_mxn),
-    saldoDeudorToleranciaPct: Number(p.saldo_deudor_tolerancia_pct),
-  };
-  const vigencia = Number(p.vigencia_ips_anios);
-  const catalogo = armarCatalogo(
-    d.catalogo.map((i) => ({ ...i, duracion_efectiva: i.duracion_efectiva === null ? null : Number(i.duracion_efectiva) })),
-    d.prorrateo.map((x) => ({ ...x, factor: Number(x.factor) })),
-  );
-  const perfiles = new Map(d.perfiles.map((x) => [x.codigo, { ...x,
-    fecha_calculo: x.fecha_calculo ? String(x.fecha_calculo).slice(0, 10) : null,
-    fecha_cuestionario: x.fecha_cuestionario ? String(x.fecha_cuestionario).slice(0, 10) : null }]));
-  const titularesDe = new Map();
-  for (const t of d.titulares) titularesDe.set(t.cuenta_ibkr, [...(titularesDe.get(t.cuenta_ibkr) ?? []), t]);
-  const fotoDe = new Map();
-  for (const r of d.foto) fotoDe.set(r.cuenta_ibkr, [...(fotoDe.get(r.cuenta_ibkr) ?? []), { ...r, valor_base: Number(r.valor_base) }]);
-
-  const universo = d.cuentas.filter((c) => c.status !== 'baja' && !c.fecha_cierre)
-    .sort((a, b) => (a.codigo_cliente < b.codigo_cliente ? -1 : 1));
-  console.log(`\n== Semáforo EN SECO · foto ${td} · motor ${VERSION_MOTOR} · ${universo.length} cuentas vigentes · FIX: ${fix ?? '—'} (${fixOrigen})`);
+  const corrida = correrSemaforo(d, fix, { ipsFijadoSeco: fijadosSeco });
+  console.log(`\n== Semáforo EN SECO · foto ${td} · motor ${corrida.version_motor} · ${corrida.filas.length} cuentas vigentes · FIX: ${fix ?? '—'} (${fixOrigen})`);
   if (fijadosSeco.size) console.log(`   IPS fijado simulado: ${[...fijadosSeco].map(([a, b]) => `${a}→${b}`).join(', ')}`);
 
-  const conteo = new Map();
-  const evaluaciones = [];
-  for (const c of universo) {
-    const ips = c.codigo_ips_fijado ?? fijadosSeco.get(c.codigo_cliente) ?? null;
-    const perfil = resolverPerfilCuenta({ cuenta_ibkr: c.cuenta_ibkr, tipo: c.tipo, titulares: titularesDe.get(c.cuenta_ibkr) ?? [],
-      codigo_ips_fijado: ips }, perfiles, td, vigencia);
-    const filas = fotoDe.get(c.cuenta_ibkr);
-    const nav = filas?.find((r) => r.tipo_renglon === 'nav_ibkr');
-    const foto = filas && nav ? { moneda_base: nav.moneda_base, nav_ibkr: nav.valor_base,
-      renglones: filas.filter((r) => r.tipo_renglon !== 'nav_ibkr') } : null;
-    const ev = evaluarCuenta({ cuenta_ibkr: c.cuenta_ibkr, es_propia: c.es_propia, perfil, foto, tipo_cambio: fix, catalogo, parametros: M4 });
-    conteo.set(ev.estado, (conteo.get(ev.estado) ?? 0) + 1);
-    evaluaciones.push({ ...ev, ips_pendiente: perfil.ok ? perfil.ips_pendiente : [] });
-
+  const conteo = new Map(Object.entries(corrida.conteo));
+  const evaluaciones = corrida.filas.map((f) => f.evaluacion);
+  for (const { cuenta: c, perfil, foto, evaluacion: ev } of corrida.filas) {
     const perf = perfil.ok ? `${perfil.perfil} (${perfil.origen}: ${perfil.fuentes.join(' + ')}; fases ${perfil.fases.map((f) => f.fase).join('/')})`
       : `sin perfil: ${perfil.motivo}${perfil.faltantes.length ? ` (${perfil.faltantes.join(', ')})` : ''}`;
     const m = ev.metricas;
