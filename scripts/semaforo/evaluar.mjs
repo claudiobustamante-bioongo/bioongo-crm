@@ -92,7 +92,7 @@ try {
 
   const fijadosSeco = new Map((args['ips-fijado'] ?? '').split(',').filter(Boolean).map((p) => p.split('=')));
   const corrida = correrSemaforo(d, fix, { ipsFijadoSeco: fijadosSeco });
-  console.log(`\n== Semáforo EN SECO · foto ${td} · motor ${corrida.version_motor} · ${corrida.filas.length} cuentas vigentes · FIX: ${fix ?? '—'} (${fixOrigen})`);
+  console.log(`\n== Semáforo ${registrar ? 'REGISTRO (ensayo y confirmación al final)' : 'EN SECO'} · foto ${td} · motor ${corrida.version_motor} · ${corrida.filas.length} cuentas vigentes · FIX: ${fix ?? '—'} (${fixOrigen})`);
   if (fijadosSeco.size) console.log(`   IPS fijado simulado: ${[...fijadosSeco].map(([a, b]) => `${a}→${b}`).join(', ')}`);
 
   const conteo = new Map(Object.entries(corrida.conteo));
