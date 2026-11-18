@@ -179,3 +179,44 @@ Otros reportes: R03 J-0314 solo si hay custodia en México; R27 B-2711 trimestra
 - Verificar la clave CASFIM en SITI.
 - Probar la sincronización semestral con el corte 31-dic en la primera semana de enero (plazo 25-ene).
 - Revisión de manuales: oro como alternativo, redacción de equivalentes de efectivo, mirada a través, deuda extranjera en §7.5.2, moneda del retorno objetivo.
+
+---
+
+## 7 · Fase 2: foto diaria automática (operación)
+
+Diseño aprobado por Claudio (Día 62; ajustes del 18-nov-2026). Código: `lib/foto-diaria-sistema.ts` (lógica), `supabase/functions/ibkr-foto-diaria` (Edge Function). Las funciones SQL y el cron se crean por `migraciones/` con el flujo migracion-segura; mientras no corran, nada de esto opera.
+
+### 7.1 Qué hace
+- pg_cron invoca la Edge Function `ibkr-foto-diaria` cada 20 min de 06:00 a 07:40 CDMX, lunes a viernes (`*/20 12-13 * * 1-5` en UTC; CDMX es UTC−6 todo el año), con la llave `FOTO_CRON_LLAVE` (secretos de Supabase + Vault).
+- Cada ejecución da un paso sobre el td (último lunes-viernes antes de hoy): pedir la Flex → recogerla (si IBKR aún genera, espera a la siguiente; si llega sin NAV, la siguiente vuelve a pedir) → cargar con `fn_cargar_ibkr_sistema` (mismas reglas que `cargar-foto.mjs`) → FIX del td (reglas de `fix.mjs`) → semáforo con usuario `sistema:ibkr-cron`, solo con foto y FIX del td.
+- td feriado de NYSE (`lib/calendario-nyse.ts`) → «omitido», sin pedir nada a IBKR. El calendario cubre hasta `CUBIERTO_HASTA` (2027-12-31): actualizarlo cada año antes de diciembre.
+- Cada paso deja un evento en `ibkr_cron_eventos` (solo agregar, sin secretos ni números de cuenta). A las 08:00 un control registra «error» si el td no quedó «cargado», «ya_cargado» u «omitido»; eso es lo que muestra la pantalla Hoy.
+- El corte semestral del R03 NO pasa por aquí: sigue exigiendo confirmación humana.
+
+### 7.2 Recuperar a mano un día que falló
+Si el control de las 08:00 marcó «error» (o la pantalla Hoy no muestra la foto del td):
+
+1. **Ver qué pasó** (MCP, solo lectura): los eventos del td en `ibkr_cron_eventos` (paso, resultado y `detalle.mensaje`). Causas típicas: IBKR sin NAV las tres veces, token de IBKR vencido (código 1012), Banxico caído, FIX distinto del registrado.
+2. **Foto** (si no quedó cargada), con la carga de la fase 1; la corre Claudio con «!»:
+   - `node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/ibkr/cargar-foto.mjs --usuario <correo> --td AAAAMMDD` → vista previa, ensayo y clave;
+   - la misma línea con `--confirmar <clave>` → real.
+   `--td` va SIN guiones (formato de IBKR). Sirve para cualquier día pasado (fd = td).
+3. **FIX** (si no quedó): `node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/banxico/fix.mjs --usuario <correo> --fecha AAAA-MM-DD`, y luego con `--confirmar <clave>`. Aquí la fecha va CON guiones.
+4. **Semáforo** (si no quedó): `node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/semaforo/evaluar.mjs --sync <uuid de la foto>` en seco; luego `--registrar sí --usuario <correo>` y `--confirmar <clave>`.
+
+Notas:
+- Si la foto se recupera a mano ANTES de las 07:40, la siguiente ejecución automática la ve («ya_cargado») y completa sola el FIX y el semáforo; no hace falta el paso 3 ni el 4.
+- Nada se duplica: la base rechaza una segunda foto del mismo td (IB409), un FIX repetido (IB409) y un semáforo repetido de la misma foto y versión del motor (UNIQUE). Un rechazo así significa «ya estaba», no un fallo.
+- Lo recuperado a mano queda firmado con el correo de quien lo corre; lo automático, con `sistema:ibkr-cron`.
+
+### 7.3 Apagar el cron
+Tres maneras, de la más suave a la más definitiva. Cualquiera de ellas es una escritura en producción: se hace con aprobación de Claudio y queda anotada (bitácora o commit).
+
+1. **Pausar** (reversible, conserva la programación):
+   `select cron.alter_job(jobid, active := false) from cron.job where jobname in ('ibkr-foto-diaria', 'ibkr-foto-diaria-control');`
+   Para reanudar, lo mismo con `active := true`.
+2. **Cortar la llave**: borrar `FOTO_CRON_LLAVE` de los secretos de la función (o cambiarla solo ahí). El cron sigue disparando, pero la función responde 401 y no hace nada. Útil si se sospecha de la llave.
+3. **Quitar la programación** (definitivo; para volver hay que correr de nuevo la migración del cron):
+   `select cron.unschedule('ibkr-foto-diaria'); select cron.unschedule('ibkr-foto-diaria-control');`
+
+Con el cron apagado, la foto diaria vuelve a la fase 1 (§7.2, pasos 2 a 4). La función, las tablas y los eventos se quedan, inertes.
