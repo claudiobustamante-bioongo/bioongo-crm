@@ -120,6 +120,17 @@ with ddl(orden, sub, linea) as (
     from pg_class c, aclexplode(c.relacl) x
    where c.relnamespace = 'public'::regnamespace and c.relkind in ('r', 'v')
      and (x.grantee = 0 or x.grantee::regrole::text in ('anon', 'authenticated', 'service_role'))
+  -- Grants por columna (p. ej. ibkr_cron_eventos sin referencia_flex para
+  -- authenticated, 18-nov-2026): después de los de tabla, porque el revoke de la
+  -- tabla también limpia los de columna.
+  union all
+  select 9, c.relname || '2' || a.attname || x.privilege_type || x.grantee::text,
+         'grant ' || x.privilege_type || ' (' || quote_ident(a.attname) || ') on public.' || quote_ident(c.relname) || ' to '
+         || case when x.grantee = 0 then 'public' else quote_ident(x.grantee::regrole::text) end || ';'
+    from pg_class c join pg_attribute a on a.attrelid = c.oid, aclexplode(a.attacl) x
+   where c.relnamespace = 'public'::regnamespace and c.relkind in ('r', 'v')
+     and a.attnum > 0 and not a.attisdropped and a.attacl is not null
+     and (x.grantee = 0 or x.grantee::regrole::text in ('anon', 'authenticated', 'service_role'))
 
   -- 10 · Grants de funciones
   union all

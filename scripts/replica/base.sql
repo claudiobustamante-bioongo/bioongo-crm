@@ -1,10 +1,48 @@
 -- ============================================================================
 -- base.sql · réplica PGlite · SOLO ESQUEMA de public, sin una fila de datos.
--- Última migración incluida: 2026-11-16-02-ips-fijado-cspmu1062.sql (según la bitácora)
--- Generado desde el catálogo de producción el 2026-11-16 11:51 (CDMX)
+-- Última migración incluida: 2026-11-18-01-foto-diaria-sistema.sql (según la bitácora)
+-- Generado desde el catálogo de producción el 2026-11-18 11:22 (CDMX)
 -- con scripts/replica/generar-base.sql. No se edita a mano: se regenera.
 -- ============================================================================
 set check_function_bodies = off;
+CREATE OR REPLACE FUNCTION public.fn_anotar_evento_foto(p_evento jsonb)
+ RETURNS uuid
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+declare
+  v_td      date;
+  v_sync    uuid;
+  v_detalle jsonb;
+  v_id      uuid;
+begin
+  if p_evento is null or jsonb_typeof(p_evento) <> 'object' then
+    raise exception 'El evento no es un objeto.' using errcode = 'IB400';
+  end if;
+  if (p_evento ->> 'paso') is null or (p_evento ->> 'paso') not in ('foto', 'fix', 'semaforo') then
+    raise exception 'paso debe ser foto, fix o semaforo (el control lo anota fn_control_foto_diaria).' using errcode = 'IB400';
+  end if;
+  begin
+    v_td := (p_evento ->> 'td')::date;
+    v_sync := nullif(p_evento ->> 'sync_id', '')::uuid;
+  exception when others then
+    raise exception 'td o sync_id con forma inválida.' using errcode = 'IB400';
+  end;
+  if v_td is null then raise exception 'Falta td.' using errcode = 'IB400'; end if;
+  if v_sync is not null and not exists (select 1 from sync_ibkr where id = v_sync) then
+    raise exception 'sync_id no existe.' using errcode = 'IB404';
+  end if;
+  v_detalle := coalesce(p_evento -> 'detalle', '{}');
+  if jsonb_typeof(v_detalle) <> 'object' then raise exception 'detalle debe ser un objeto.' using errcode = 'IB400'; end if;
+  -- Defensa en profundidad: la función ya sanea, pero ningún número de cuenta entra a la tabla.
+  v_detalle := regexp_replace(v_detalle::text, '\mU[0-9]{5,}\M', 'U••••', 'g')::jsonb;
+  insert into ibkr_cron_eventos (td, paso, resultado, referencia_flex, sync_id, detalle)
+  values (v_td, p_evento ->> 'paso', p_evento ->> 'resultado', nullif(p_evento ->> 'referencia_flex', ''), v_sync, v_detalle)
+  returning id into v_id;
+  return v_id;
+end $function$
+;
 CREATE OR REPLACE FUNCTION public.fn_archivar_bloqueos()
  RETURNS trigger
  LANGUAGE plpgsql
@@ -300,7 +338,21 @@ CREATE OR REPLACE FUNCTION public.fn_cargar_ibkr(p_payload jsonb)
  SET search_path TO 'public'
 AS $function$
 declare
-  v_usuario  text := fn_firmante_sesion();
+  v_usuario text := fn_firmante_sesion();
+begin
+  if v_usuario is null then
+    raise exception 'Sin sesión: cargar IBKR exige un usuario autenticado.' using errcode = 'IB401';
+  end if;
+  return fn_cargar_ibkr_nucleo(p_payload, v_usuario, 'aplicacion');
+end $function$
+;
+CREATE OR REPLACE FUNCTION public.fn_cargar_ibkr_nucleo(p_payload jsonb, p_usuario text, p_origen text)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SET search_path TO 'public'
+AS $function$
+declare
+  v_usuario  text := nullif(btrim(coalesce(p_usuario, '')), '');
   v_hoy      date := (now() at time zone 'America/Mexico_City')::date;
   v_uso      text;
   v_ventana  text;
@@ -321,6 +373,9 @@ declare
 begin
   if v_usuario is null then
     raise exception 'Sin sesión: cargar IBKR exige un usuario autenticado.' using errcode = 'IB401';
+  end if;
+  if p_origen is null or p_origen not in ('aplicacion', 'sistema') then
+    raise exception 'Origen inválido.' using errcode = 'IB400';
   end if;
   if p_payload is null or jsonb_typeof(p_payload) <> 'object' then
     raise exception 'La carga no es un objeto.' using errcode = 'IB400';
@@ -444,12 +499,116 @@ begin
   end if;
 
   insert into bitacora (entidad, entidad_id, accion, usuario, origen, metadata)
-  values ('sync_ibkr', v_sync::text, 'carga_ibkr', v_usuario, 'aplicacion',
+  values ('sync_ibkr', v_sync::text, 'carga_ibkr', v_usuario, p_origen,
           jsonb_build_object('uso', v_uso, 'ventana', v_ventana, 'fd', v_fd, 'td', v_td,
                              'cuentas', v_cuentas, 'renglones', v_n, 'ignoradas', v_ign,
                              'descuadres', jsonb_array_length(v_desc), 'xml_sha256', v_sha));
 
   return jsonb_build_object('sync_id', v_sync, 'cuentas', v_cuentas, 'renglones', v_n);
+end $function$
+;
+CREATE OR REPLACE FUNCTION public.fn_cargar_ibkr_sistema(p_carga jsonb)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+declare
+  v_n integer;
+begin
+  if p_carga is null or jsonb_typeof(p_carga) <> 'object' or (p_carga ->> 'uso') is distinct from 'foto_diaria' then
+    raise exception 'La carga automática solo admite foto_diaria.' using errcode = 'IB400';
+  end if;
+  if jsonb_typeof(p_carga -> 'posiciones') = 'array' then
+    select count(*) into v_n
+      from jsonb_array_elements(p_carga -> 'posiciones') r
+      join cuentas_ibkr ci on ci.cuenta_ibkr = r ->> 'cuenta_ibkr'
+      join clientes c on c.codigo_cliente = ci.codigo_cliente
+     where ci.fecha_cierre is not null or c.status = 'baja';
+    if v_n > 0 then
+      raise exception 'La carga automática trae % renglón(es) de cuentas cerradas o de baja: no se carga.', v_n
+        using errcode = 'IB422';
+    end if;
+  end if;
+  perform set_config('request.jwt.claims', json_build_object('email', 'sistema:ibkr-cron', 'canal', 'sistema')::text, true);
+  return fn_cargar_ibkr_nucleo(p_carga, 'sistema:ibkr-cron', 'sistema');
+end $function$
+;
+CREATE OR REPLACE FUNCTION public.fn_control_foto_diaria()
+ RETURNS text
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+declare
+  v_hoy date := (now() at time zone 'America/Mexico_City')::date;
+  v_td  date;
+  v_ult text;
+begin
+  if exists (select 1 from ibkr_cron_eventos
+              where paso = 'foto' and resultado in ('cargado', 'ya_cargado', 'omitido')
+                and (creado_en at time zone 'America/Mexico_City')::date = v_hoy) then
+    return 'ok';
+  end if;
+  if exists (select 1 from ibkr_cron_eventos
+              where paso = 'control' and (creado_en at time zone 'America/Mexico_City')::date = v_hoy) then
+    return 'error'; -- ya anotado hoy
+  end if;
+  select td, resultado into v_td, v_ult from ibkr_cron_eventos
+   where paso = 'foto' and (creado_en at time zone 'America/Mexico_City')::date = v_hoy
+   order by creado_en desc, id desc limit 1;
+  insert into ibkr_cron_eventos (td, paso, resultado, detalle)
+  values (v_td, 'control', 'error', jsonb_build_object(
+    'motivo', case when v_td is null then 'Ninguna ejecución de la foto automática dejó eventos hoy.'
+                   else 'La foto del td no quedó cargada ni omitida a las 08:00.' end,
+    'ultimo_resultado_foto', v_ult,
+    'recuperar', 'docs/ESPEC_IBKR_Flex.md §7.2'));
+  return 'error';
+end $function$
+;
+CREATE OR REPLACE FUNCTION public.fn_datos_semaforo_sistema(p_sync uuid)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ STABLE SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+declare
+  v_td date;
+begin
+  select td into v_td from sync_ibkr where id = p_sync and uso = 'foto_diaria';
+  if not found then raise exception 'La carga no existe o no es una foto diaria.' using errcode = 'IB404'; end if;
+  return jsonb_build_object(
+    'sync', jsonb_build_object('id', p_sync, 'td', v_td),
+    'foto', (select coalesce(jsonb_agg(jsonb_build_object('cuenta_ibkr', cuenta_ibkr, 'tipo_renglon', tipo_renglon, 'ticker', ticker,
+        'asset_category', asset_category, 'sub_category', sub_category, 'valor_base', valor_base, 'moneda_base', moneda_base)), '[]')
+      from posiciones_detalle where sync_id = p_sync),
+    'cuentas', (select coalesce(jsonb_agg(jsonb_build_object('cuenta_ibkr', ci.cuenta_ibkr, 'codigo_cliente', ci.codigo_cliente,
+        'tipo', ci.tipo, 'es_propia', ci.es_propia, 'fecha_cierre', ci.fecha_cierre, 'status', c.status,
+        'codigo_ips_fijado', ci.codigo_ips_fijado)), '[]')
+      from cuentas_ibkr ci join clientes c using (codigo_cliente)),
+    'titulares', (select coalesce(jsonb_agg(jsonb_build_object('cuenta_ibkr', ct.cuenta_ibkr, 'rol', ct.rol,
+        'codigo_ips', p.codigo_ips, 'codigo_ficha', p.codigo_ficha)), '[]')
+      from cuenta_titulares ct join personas p on p.id = ct.persona_id),
+    'perfiles', (select coalesce(jsonb_agg(jsonb_build_object('codigo', pr.codigo_cliente,
+        'perfil', coalesce(pr.perfil_ajustado, pr.resultado_perfil), 'fase', pr.fase,
+        'fecha_calculo', pr.fecha_calculo::date, 'fecha_cuestionario', pr.fecha_evaluacion,
+        'ips_firmado', exists (select 1 from documentos_expediente d
+                                where d.codigo_cliente = pr.codigo_cliente and d.tipo = 'ips_firmado'))), '[]')
+      from perfil_riesgo pr),
+    'limites_fase', (select coalesce(jsonb_object_agg(fase, jsonb_build_object('rv_max_pct', rv_max_pct, 'rf_min_pct', rf_min_pct,
+        'liquidez_min_pct', liquidez_min_pct)), '{}') from limites_fase),
+    'limites_perfil', (select coalesce(jsonb_object_agg(perfil, techos), '{}') from
+        (select perfil, jsonb_object_agg(clase_activo, max_pct) techos from limites_perfil group by perfil) x),
+    'reglas_perfil', (select coalesce(jsonb_object_agg(perfil, jsonb_build_object('duracion_gob_menor_a', duracion_gob_menor_a,
+        'liquidez_min_pct', liquidez_min_pct, 'efectivo_cuenta_rf', efectivo_cuenta_rf, 'rv_total_max_pct', rv_total_max_pct)), '{}')
+      from reglas_perfil),
+    'parametros', (select coalesce(jsonb_object_agg(clave, coalesce(valor_num::text, valor_fecha::text, valor_bool::text)), '{}')
+      from parametros_cumplimiento),
+    'catalogo', (select coalesce(jsonb_agg(jsonb_build_object('ticker', ticker, 'clase_activo', clase_activo, 'elegible', elegible,
+        'es_equivalente_efectivo', es_equivalente_efectivo, 'duracion_efectiva', duracion_efectiva)), '[]')
+      from catalogo_instrumentos),
+    'prorrateo', (select coalesce(jsonb_agg(jsonb_build_object('ticker', ticker, 'clase_activo', clase_activo, 'factor', factor)), '[]')
+      from catalogo_prorrateo));
 end $function$
 ;
 CREATE OR REPLACE FUNCTION public.fn_firmante_sesion()
@@ -461,6 +620,47 @@ AS $function$
   select nullif(btrim(coalesce(
            nullif(current_setting('request.jwt.claims', true), '')::jsonb ->> 'email',
            nullif(current_setting('request.jwt.claims', true), '')::jsonb ->> 'sub')), '')
+$function$
+;
+CREATE OR REPLACE FUNCTION public.fn_foto_diaria_estado(p_td date, p_version_motor text)
+ RETURNS jsonb
+ LANGUAGE sql
+ STABLE SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+  with s as (select id from sync_ibkr where uso = 'foto_diaria' and td = p_td order by confirmado_en desc limit 1),
+  u as (select distinct on (paso) paso, resultado, referencia_flex, detalle
+          from ibkr_cron_eventos where td = p_td and paso in ('foto', 'fix', 'semaforo')
+         order by paso, creado_en desc, id desc)
+  select jsonb_build_object(
+    'sync_id', (select id from s),
+    'ultimo', coalesce((select jsonb_object_agg(paso, jsonb_build_object('resultado', resultado,
+                 'referencia_flex', referencia_flex, 'detalle', detalle)) from u), '{}'),
+    'semaforo_registrado', exists (select 1 from semaforo_evaluaciones e
+                                    where e.sync_id = (select id from s) and e.version_motor = p_version_motor))
+$function$
+;
+CREATE OR REPLACE FUNCTION public.fn_foto_diaria_referencia()
+ RETURNS jsonb
+ LANGUAGE sql
+ STABLE SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+  select jsonb_build_object(
+    'cuentas', coalesce((select jsonb_agg(jsonb_build_object('cuenta_ibkr', ci.cuenta_ibkr, 'codigo_cliente', ci.codigo_cliente,
+        'tipo', ci.tipo, 'status', c.status, 'fecha_baja', c.fecha_baja, 'fecha_cierre', ci.fecha_cierre,
+        'es_propia', ci.es_propia) order by ci.codigo_cliente)
+      from cuentas_ibkr ci join clientes c using (codigo_cliente)), '[]'),
+    'catalogo', coalesce((select jsonb_agg(ticker order by ticker) from catalogo_instrumentos), '[]'))
+$function$
+;
+CREATE OR REPLACE FUNCTION public.fn_foto_diaria_tipo_cambio(p_serie text, p_fecha date)
+ RETURNS numeric
+ LANGUAGE sql
+ STABLE SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+  select valor from tipo_cambio where serie = p_serie and fecha = p_fecha
 $function$
 ;
 CREATE OR REPLACE FUNCTION public.fn_levantar_bloqueo(p_bloqueo_id uuid, p_motivo text, p_rol text, p_declaracion text, p_autorizacion_oficial text DEFAULT NULL::text)
@@ -693,6 +893,20 @@ CREATE OR REPLACE FUNCTION public.fn_registrar_semaforo(p_lote jsonb)
 AS $function$
 declare
   v_usuario text := fn_firmante_sesion();
+begin
+  if v_usuario is null then
+    raise exception 'Sin sesión: registrar el semáforo exige un usuario autenticado.' using errcode = 'IB401';
+  end if;
+  return fn_registrar_semaforo_nucleo(p_lote, v_usuario, 'aplicacion');
+end $function$
+;
+CREATE OR REPLACE FUNCTION public.fn_registrar_semaforo_nucleo(p_lote jsonb, p_usuario text, p_origen text)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SET search_path TO 'public'
+AS $function$
+declare
+  v_usuario text := nullif(btrim(coalesce(p_usuario, '')), '');
   v_sync    sync_ibkr%rowtype;
   v_version text;
   v_fix     numeric;
@@ -703,7 +917,13 @@ begin
   if v_usuario is null then
     raise exception 'Sin sesión: registrar el semáforo exige un usuario autenticado.' using errcode = 'IB401';
   end if;
-  if p_lote is null or jsonb_typeof(p_lote) <> 'object' or jsonb_typeof(p_lote -> 'evaluaciones') <> 'array'
+  if p_origen is null or p_origen not in ('aplicacion', 'sistema') then
+    raise exception 'Origen inválido.' using errcode = 'IB400';
+  end if;
+  -- coalesce: sin la clave «evaluaciones», jsonb_typeof da NULL y la versión del 16-nov dejaba pasar el
+  -- lote vacío (0 evaluaciones y un asiento en la bitácora). Encontrado por la autoprueba del 18-nov.
+  if p_lote is null or jsonb_typeof(p_lote) <> 'object'
+     or coalesce(jsonb_typeof(p_lote -> 'evaluaciones'), '') <> 'array'
      or jsonb_array_length(p_lote -> 'evaluaciones') = 0 then
     raise exception 'El lote debe traer evaluaciones.' using errcode = 'IB400';
   end if;
@@ -737,12 +957,23 @@ begin
   get diagnostics v_n = row_count;
 
   insert into bitacora (entidad, entidad_id, accion, usuario, origen, metadata)
-  values ('semaforo', v_sync.id::text, 'registro_semaforo', v_usuario, 'aplicacion',
+  values ('semaforo', v_sync.id::text, 'registro_semaforo', v_usuario, p_origen,
           jsonb_build_object('fecha_foto', v_sync.td, 'version_motor', v_version, 'evaluaciones', v_n,
                              'tipo_cambio', v_fix,
                              'por_estado', (select jsonb_object_agg(estado, n) from
                                 (select e ->> 'estado' as estado, count(*) n from jsonb_array_elements(v_evals) e group by 1) t)));
   return jsonb_build_object('sync_id', v_sync.id, 'fecha_foto', v_sync.td, 'evaluaciones', v_n);
+end $function$
+;
+CREATE OR REPLACE FUNCTION public.fn_registrar_semaforo_sistema(p_lote jsonb)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+begin
+  perform set_config('request.jwt.claims', json_build_object('email', 'sistema:ibkr-cron', 'canal', 'sistema')::text, true);
+  return fn_registrar_semaforo_nucleo(p_lote, 'sistema:ibkr-cron', 'sistema');
 end $function$
 ;
 CREATE OR REPLACE FUNCTION public.fn_registrar_tipo_cambio(p_serie text, p_fecha date, p_valor numeric, p_fecha_solicitada date, p_fuente text, p_nota text)
@@ -753,6 +984,20 @@ CREATE OR REPLACE FUNCTION public.fn_registrar_tipo_cambio(p_serie text, p_fecha
 AS $function$
 declare
   v_usuario text := fn_firmante_sesion();
+begin
+  if v_usuario is null then
+    raise exception 'Sin sesión: registrar un tipo de cambio exige un usuario autenticado.' using errcode = 'IB401';
+  end if;
+  return fn_registrar_tipo_cambio_nucleo(p_serie, p_fecha, p_valor, p_fecha_solicitada, p_fuente, p_nota, v_usuario);
+end $function$
+;
+CREATE OR REPLACE FUNCTION public.fn_registrar_tipo_cambio_nucleo(p_serie text, p_fecha date, p_valor numeric, p_fecha_solicitada date, p_fuente text, p_nota text, p_usuario text)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SET search_path TO 'public'
+AS $function$
+declare
+  v_usuario text := nullif(btrim(coalesce(p_usuario, '')), '');
   v_hoy     date := (now() at time zone 'America/Mexico_City')::date;
   v_previo  tipo_cambio%rowtype;
   v_id      uuid;
@@ -776,6 +1021,17 @@ begin
   returning id into v_id;
   return jsonb_build_object('id', v_id, 'serie', p_serie, 'fecha', p_fecha, 'valor', p_valor,
                             'fecha_solicitada', p_fecha_solicitada);
+end $function$
+;
+CREATE OR REPLACE FUNCTION public.fn_registrar_tipo_cambio_sistema(p_serie text, p_fecha date, p_valor numeric, p_fecha_solicitada date, p_fuente text, p_nota text)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+begin
+  perform set_config('request.jwt.claims', json_build_object('email', 'sistema:ibkr-cron', 'canal', 'sistema')::text, true);
+  return fn_registrar_tipo_cambio_nucleo(p_serie, p_fecha, p_valor, p_fecha_solicitada, p_fuente, p_nota, 'sistema:ibkr-cron');
 end $function$
 ;
 CREATE OR REPLACE FUNCTION public.fn_resolver_coincidencia(p_coincidencia_id uuid, p_estado text, p_motivo text, p_rol text, p_declaracion text)
@@ -1184,6 +1440,17 @@ create table public.firmas_cumplimiento_historico (
   firmado_en timestamp with time zone,
   declaracion text,
   autorizacion_oficial text
+);
+create table public.ibkr_cron_eventos (
+  id uuid default gen_random_uuid() not null,
+  td date,
+  paso text not null,
+  resultado text not null,
+  referencia_flex text,
+  sync_id uuid,
+  detalle jsonb default '{}'::jsonb not null,
+  creado_por text default 'sistema:ibkr-cron'::text not null,
+  creado_en timestamp with time zone default clock_timestamp() not null
 );
 create table public.kyc_detalle (
   id uuid default gen_random_uuid() not null,
@@ -1696,6 +1963,13 @@ alter table firmas_cumplimiento add constraint firmas_entidad_valida CHECK ((ent
 alter table firmas_cumplimiento add constraint firmas_firmante_lleno CHECK ((btrim(firmante) <> ''::text));
 alter table firmas_cumplimiento add constraint firmas_levantamiento_asesor_autorizado CHECK (((acto <> 'levantamiento_bloqueo'::text) OR (rol <> 'asesor'::text) OR (autorizacion_oficial IS NOT NULL)));
 alter table firmas_cumplimiento add constraint firmas_rol_valido CHECK ((rol = ANY (ARRAY['asesor'::text, 'oficial_cumplimiento'::text])));
+alter table ibkr_cron_eventos add constraint ibkr_cron_eventos_pkey PRIMARY KEY (id);
+alter table ibkr_cron_eventos add constraint ibkr_evento_control_es_error CHECK (((paso <> 'control'::text) OR (resultado = 'error'::text)));
+alter table ibkr_cron_eventos add constraint ibkr_evento_detalle_objeto CHECK ((jsonb_typeof(detalle) = 'object'::text));
+alter table ibkr_cron_eventos add constraint ibkr_evento_paso_valido CHECK ((paso = ANY (ARRAY['foto'::text, 'fix'::text, 'semaforo'::text, 'control'::text])));
+alter table ibkr_cron_eventos add constraint ibkr_evento_referencia CHECK (((referencia_flex IS NULL) OR ((paso = 'foto'::text) AND (resultado = ANY (ARRAY['pedido'::text, 'no_listo'::text])) AND (referencia_flex ~ '^[A-Za-z0-9]{1,64}$'::text))));
+alter table ibkr_cron_eventos add constraint ibkr_evento_resultado_valido CHECK ((resultado = ANY (ARRAY['pedido'::text, 'no_listo'::text, 'sin_nav'::text, 'cargado'::text, 'ya_cargado'::text, 'omitido'::text, 'error'::text])));
+alter table ibkr_cron_eventos add constraint ibkr_evento_td_salvo_control CHECK (((td IS NOT NULL) OR (paso = 'control'::text)));
 alter table kyc_detalle add constraint kyc_detalle_codigo_cliente_key UNIQUE (codigo_cliente);
 alter table kyc_detalle add constraint kyc_detalle_pkey PRIMARY KEY (id);
 alter table kyc_detalle add constraint kyc_no_vigente_lleno CHECK (((no_vigente_motivo IS NULL) OR (btrim(no_vigente_motivo) <> ''::text)));
@@ -1806,6 +2080,7 @@ alter table cuentas_ibkr add constraint cuentas_ibkr_codigo_ips_fijado_fkey FORE
 alter table documentos_expediente add constraint documentos_expediente_reemplaza_a_fkey FOREIGN KEY (reemplaza_a) REFERENCES documentos_expediente(id);
 alter table ebr_evaluaciones add constraint ebr_evaluaciones_codigo_cliente_fkey FOREIGN KEY (codigo_cliente) REFERENCES clientes(codigo_cliente) DEFERRABLE;
 alter table ebr_evaluaciones add constraint ebr_evaluaciones_persona_id_fkey FOREIGN KEY (persona_id) REFERENCES personas(id) DEFERRABLE;
+alter table ibkr_cron_eventos add constraint ibkr_cron_eventos_sync_id_fkey FOREIGN KEY (sync_id) REFERENCES sync_ibkr(id);
 alter table kyc_detalle add constraint kyc_detalle_codigo_cliente_fkey FOREIGN KEY (codigo_cliente) REFERENCES clientes(codigo_cliente) DEFERRABLE;
 alter table kyc_detalle add constraint kyc_detalle_persona_id_fkey FOREIGN KEY (persona_id) REFERENCES personas(id) DEFERRABLE;
 alter table listas_coincidencias add constraint listas_coincidencias_codigo_cliente_fkey FOREIGN KEY (codigo_cliente) REFERENCES clientes(codigo_cliente) DEFERRABLE;
@@ -1836,6 +2111,8 @@ alter table transaccionalidad add constraint transaccionalidad_cuenta_ibkr_fkey 
 CREATE INDEX bitacora_entidad_idx ON public.bitacora USING btree (entidad, entidad_id, created_at DESC);
 CREATE INDEX bitacora_fecha_idx ON public.bitacora USING btree (created_at DESC);
 CREATE INDEX ebr_evaluaciones_cliente_fecha_idx ON public.ebr_evaluaciones USING btree (codigo_cliente, fecha_evaluacion DESC);
+CREATE INDEX ibkr_cron_eventos_creado ON public.ibkr_cron_eventos USING btree (creado_en DESC);
+CREATE INDEX ibkr_cron_eventos_td ON public.ibkr_cron_eventos USING btree (td, paso, creado_en DESC);
 CREATE INDEX idx_beneficiarios_beneficiario_persona ON public.beneficiarios USING btree (beneficiario_persona_id) WHERE (beneficiario_persona_id IS NOT NULL);
 CREATE INDEX idx_beneficiarios_dueno ON public.beneficiarios USING btree (persona_id) WHERE (persona_id IS NOT NULL);
 CREATE INDEX idx_bloqueos_coincidencia ON public.cliente_bloqueos USING btree (coincidencia_id);
@@ -1903,6 +2180,29 @@ create view public.v_comite_cartera with (security_invoker=true) as  SELECT ci.c
            FROM semaforo_evaluaciones
           ORDER BY semaforo_evaluaciones.cuenta_ibkr, semaforo_evaluaciones.fecha_foto DESC, semaforo_evaluaciones.evaluado_en DESC) e
      JOIN cuentas_ibkr ci USING (cuenta_ibkr));
+create view public.v_foto_diaria_estado with (security_invoker=true) as  WITH e AS (
+         SELECT ((ibkr_cron_eventos.creado_en AT TIME ZONE 'America/Mexico_City'::text))::date AS dia,
+            ibkr_cron_eventos.td,
+            ibkr_cron_eventos.paso,
+            ibkr_cron_eventos.resultado,
+            ibkr_cron_eventos.sync_id,
+            ibkr_cron_eventos.detalle,
+            ibkr_cron_eventos.creado_en,
+            row_number() OVER (PARTITION BY (((ibkr_cron_eventos.creado_en AT TIME ZONE 'America/Mexico_City'::text))::date), ibkr_cron_eventos.paso ORDER BY ibkr_cron_eventos.creado_en DESC, ibkr_cron_eventos.id DESC) AS rn
+           FROM ibkr_cron_eventos
+        )
+ SELECT dia,
+    max(td) FILTER (WHERE (paso <> 'control'::text)) AS td,
+    max(resultado) FILTER (WHERE ((paso = 'foto'::text) AND (rn = 1))) AS foto,
+    (max((sync_id)::text) FILTER (WHERE ((paso = 'foto'::text) AND (rn = 1))))::uuid AS sync_id,
+    max(resultado) FILTER (WHERE ((paso = 'fix'::text) AND (rn = 1))) AS fix,
+    max(resultado) FILTER (WHERE ((paso = 'semaforo'::text) AND (rn = 1))) AS semaforo,
+    bool_or((paso = 'control'::text)) AS alerta_control,
+    max(COALESCE((detalle ->> 'mensaje'::text), (detalle ->> 'motivo'::text))) FILTER (WHERE ((resultado = 'error'::text) AND (rn = 1))) AS ultimo_error,
+    max(creado_en) AS ultimo_evento_en,
+    count(*) AS eventos
+   FROM e
+  GROUP BY dia;
 CREATE TRIGGER trg_bitacora AFTER INSERT OR DELETE OR UPDATE ON public.beneficiarios FOR EACH ROW EXECUTE FUNCTION fn_bitacora();
 CREATE TRIGGER trg_bitacora AFTER INSERT OR DELETE OR UPDATE ON public.catalogo_instrumentos FOR EACH ROW EXECUTE FUNCTION fn_bitacora();
 CREATE CONSTRAINT TRIGGER trg_catalogo_mixto AFTER INSERT OR UPDATE OF clase_activo ON public.catalogo_instrumentos DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION fn_validar_prorrateo();
@@ -1920,6 +2220,8 @@ CREATE TRIGGER trg_bitacora AFTER INSERT OR DELETE OR UPDATE ON public.documento
 CREATE TRIGGER trg_bitacora AFTER DELETE OR UPDATE ON public.ebr_evaluaciones FOR EACH ROW EXECUTE FUNCTION fn_bitacora();
 CREATE TRIGGER trg_archivar_firmas BEFORE DELETE OR UPDATE ON public.firmas_cumplimiento FOR EACH ROW EXECUTE FUNCTION fn_archivar_firmas();
 CREATE TRIGGER trg_bitacora AFTER INSERT OR DELETE OR UPDATE ON public.firmas_cumplimiento FOR EACH ROW EXECUTE FUNCTION fn_bitacora();
+CREATE TRIGGER trg_solo_agregar BEFORE DELETE OR UPDATE ON public.ibkr_cron_eventos FOR EACH ROW EXECUTE FUNCTION fn_solo_agregar();
+CREATE TRIGGER trg_solo_agregar_truncate BEFORE TRUNCATE ON public.ibkr_cron_eventos FOR EACH STATEMENT EXECUTE FUNCTION fn_solo_agregar();
 CREATE TRIGGER trg_bitacora AFTER INSERT OR DELETE OR UPDATE ON public.kyc_detalle FOR EACH ROW EXECUTE FUNCTION fn_bitacora();
 CREATE TRIGGER trg_bitacora AFTER INSERT OR DELETE OR UPDATE ON public.limites_fase FOR EACH ROW EXECUTE FUNCTION fn_bitacora();
 CREATE TRIGGER trg_bitacora AFTER INSERT OR DELETE OR UPDATE ON public.limites_perfil FOR EACH ROW EXECUTE FUNCTION fn_bitacora();
@@ -1962,6 +2264,7 @@ alter table public.documentos_expediente_historico enable row level security;
 alter table public.ebr_evaluaciones enable row level security;
 alter table public.firmas_cumplimiento enable row level security;
 alter table public.firmas_cumplimiento_historico enable row level security;
+alter table public.ibkr_cron_eventos enable row level security;
 alter table public.kyc_detalle enable row level security;
 alter table public.limites_fase enable row level security;
 alter table public.limites_perfil enable row level security;
@@ -2007,6 +2310,7 @@ create policy ebr_insert_auth on public.ebr_evaluaciones as permissive for inser
 create policy ebr_select_auth on public.ebr_evaluaciones as permissive for select to authenticated using (true);
 create policy firmas_historico_select_auth on public.firmas_cumplimiento_historico as permissive for select to authenticated using (true);
 create policy firmas_select_auth on public.firmas_cumplimiento as permissive for select to authenticated using (true);
+create policy ibkr_cron_eventos_select_auth on public.ibkr_cron_eventos as permissive for select to authenticated using (true);
 create policy kyc_insert_auth on public.kyc_detalle as permissive for insert to authenticated with check (true);
 create policy kyc_select_auth on public.kyc_detalle as permissive for select to authenticated using (true);
 create policy kyc_update_auth on public.kyc_detalle as permissive for update to authenticated using (true) with check (true);
@@ -2318,6 +2622,16 @@ grant TRUNCATE on public.firmas_cumplimiento_historico to anon;
 grant TRUNCATE on public.firmas_cumplimiento_historico to authenticated;
 grant TRUNCATE on public.firmas_cumplimiento_historico to service_role;
 grant UPDATE on public.firmas_cumplimiento_historico to service_role;
+revoke all on public.ibkr_cron_eventos from public, anon, authenticated, service_role;
+grant SELECT on public.ibkr_cron_eventos to service_role;
+grant SELECT (creado_en) on public.ibkr_cron_eventos to authenticated;
+grant SELECT (creado_por) on public.ibkr_cron_eventos to authenticated;
+grant SELECT (detalle) on public.ibkr_cron_eventos to authenticated;
+grant SELECT (id) on public.ibkr_cron_eventos to authenticated;
+grant SELECT (paso) on public.ibkr_cron_eventos to authenticated;
+grant SELECT (resultado) on public.ibkr_cron_eventos to authenticated;
+grant SELECT (sync_id) on public.ibkr_cron_eventos to authenticated;
+grant SELECT (td) on public.ibkr_cron_eventos to authenticated;
 revoke all on public.kyc_detalle from public, anon, authenticated, service_role;
 grant DELETE on public.kyc_detalle to anon;
 grant DELETE on public.kyc_detalle to authenticated;
@@ -2614,6 +2928,11 @@ grant UPDATE on public.transaccionalidad to service_role;
 revoke all on public.v_comite_cartera from public, anon, authenticated, service_role;
 grant SELECT on public.v_comite_cartera to authenticated;
 grant SELECT on public.v_comite_cartera to service_role;
+revoke all on public.v_foto_diaria_estado from public, anon, authenticated, service_role;
+grant SELECT on public.v_foto_diaria_estado to authenticated;
+grant SELECT on public.v_foto_diaria_estado to service_role;
+revoke all on function fn_anotar_evento_foto(jsonb) from public, anon, authenticated, service_role;
+grant execute on function fn_anotar_evento_foto(jsonb) to service_role;
 revoke all on function fn_archivar_bloqueos() from public, anon, authenticated, service_role;
 grant execute on function fn_archivar_bloqueos() to service_role;
 revoke all on function fn_archivar_cuenta_titulares() from public, anon, authenticated, service_role;
@@ -2632,9 +2951,21 @@ revoke all on function fn_bitacora() from public, anon, authenticated, service_r
 grant execute on function fn_bitacora() to service_role;
 revoke all on function fn_cargar_ibkr(jsonb) from public, anon, authenticated, service_role;
 grant execute on function fn_cargar_ibkr(jsonb) to authenticated;
+revoke all on function fn_cargar_ibkr_nucleo(jsonb,text,text) from public, anon, authenticated, service_role;
+revoke all on function fn_cargar_ibkr_sistema(jsonb) from public, anon, authenticated, service_role;
+grant execute on function fn_cargar_ibkr_sistema(jsonb) to service_role;
+revoke all on function fn_control_foto_diaria() from public, anon, authenticated, service_role;
+revoke all on function fn_datos_semaforo_sistema(uuid) from public, anon, authenticated, service_role;
+grant execute on function fn_datos_semaforo_sistema(uuid) to service_role;
 revoke all on function fn_firmante_sesion() from public, anon, authenticated, service_role;
 grant execute on function fn_firmante_sesion() to authenticated;
 grant execute on function fn_firmante_sesion() to service_role;
+revoke all on function fn_foto_diaria_estado(date,text) from public, anon, authenticated, service_role;
+grant execute on function fn_foto_diaria_estado(date,text) to service_role;
+revoke all on function fn_foto_diaria_referencia() from public, anon, authenticated, service_role;
+grant execute on function fn_foto_diaria_referencia() to service_role;
+revoke all on function fn_foto_diaria_tipo_cambio(text,date) from public, anon, authenticated, service_role;
+grant execute on function fn_foto_diaria_tipo_cambio(text,date) to service_role;
 revoke all on function fn_levantar_bloqueo(uuid,text,text,text,text) from public, anon, authenticated, service_role;
 grant execute on function fn_levantar_bloqueo(uuid,text,text,text,text) to authenticated;
 grant execute on function fn_levantar_bloqueo(uuid,text,text,text,text) to service_role;
@@ -2646,8 +2977,14 @@ grant execute on function fn_registrar_documento(text,text,text,text,integer,dat
 grant execute on function fn_registrar_documento(text,text,text,text,integer,date,uuid) to service_role;
 revoke all on function fn_registrar_semaforo(jsonb) from public, anon, authenticated, service_role;
 grant execute on function fn_registrar_semaforo(jsonb) to authenticated;
+revoke all on function fn_registrar_semaforo_nucleo(jsonb,text,text) from public, anon, authenticated, service_role;
+revoke all on function fn_registrar_semaforo_sistema(jsonb) from public, anon, authenticated, service_role;
+grant execute on function fn_registrar_semaforo_sistema(jsonb) to service_role;
 revoke all on function fn_registrar_tipo_cambio(text,date,numeric,date,text,text) from public, anon, authenticated, service_role;
 grant execute on function fn_registrar_tipo_cambio(text,date,numeric,date,text,text) to authenticated;
+revoke all on function fn_registrar_tipo_cambio_nucleo(text,date,numeric,date,text,text,text) from public, anon, authenticated, service_role;
+revoke all on function fn_registrar_tipo_cambio_sistema(text,date,numeric,date,text,text) from public, anon, authenticated, service_role;
+grant execute on function fn_registrar_tipo_cambio_sistema(text,date,numeric,date,text,text) to service_role;
 revoke all on function fn_resolver_coincidencia(uuid,text,text,text,text) from public, anon, authenticated, service_role;
 grant execute on function fn_resolver_coincidencia(uuid,text,text,text,text) to authenticated;
 grant execute on function fn_resolver_coincidencia(uuid,text,text,text,text) to service_role;
