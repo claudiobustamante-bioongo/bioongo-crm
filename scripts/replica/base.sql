@@ -1,7 +1,7 @@
 -- ============================================================================
 -- base.sql · réplica PGlite · SOLO ESQUEMA de public, sin una fila de datos.
--- Última migración incluida: 2026-11-18-01-foto-diaria-sistema.sql (según la bitácora)
--- Generado desde el catálogo de producción el 2026-11-18 11:22 (CDMX)
+-- Última migración incluida: 2026-11-18-02-cron-foto-diaria.sql (según la bitácora)
+-- Generado desde el catálogo de producción el 2026-11-18 11:46 (CDMX)
 -- con scripts/replica/generar-base.sql. No se edita a mano: se regenera.
 -- ============================================================================
 set check_function_bodies = off;
