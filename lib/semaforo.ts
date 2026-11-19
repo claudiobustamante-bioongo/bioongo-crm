@@ -31,8 +31,9 @@
  *      liquidez ≥ max(liquidez_min de cada fase y del perfil).
  *   Saldo deudor: % de la suma de saldos positivos; ≤ tolerancia aviso, > incumple.
  * Estado: ROJO si hay algo crítico o que incumple; ÁMBAR si solo avisos; VERDE.
- * Porcentajes sobre la suma de saldos POSITIVOS (ESPEC_IBKR_Flex §3.2.14); el
- * efectivo es el liquidado (el renglón EFECTIVO de la foto).
+ * Porcentajes sobre la suma de saldos POSITIVOS (ESPEC_IBKR_Flex §3.2.14). Desde
+ * 1.2.0 el efectivo de esa suma y del saldo deudor es el TOTAL (NAV − Σ
+ * posiciones); el liquidado (renglón EFECTIVO) solo entra en la liquidez.
  * Cada evaluación guarda los límites que aplicó, con su origen: una incidencia
  * no debe depender de la tabla viva de M4.
  */
@@ -40,7 +41,19 @@
 import { clasificarRenglon, type Catalogo, type RenglonPosicion } from './clasificacion-activos.ts';
 import type { PerfilCuenta } from './perfil-cuenta.ts';
 
-export const VERSION_MOTOR = 'semaforo-1.1.0';
+export const VERSION_MOTOR = 'semaforo-1.2.0';
+
+/**
+ * 1.2.0 (decisión de Claudio, 19-nov-2026, tras la primera foto automática):
+ * el efectivo de la composición y del saldo deudor es el TOTAL, derivado como
+ * NAV de IBKR − Σ posiciones (= endingCash: la carga lo concilia contra el NAV);
+ * la liquidez sigue con el liquidado (endingSettledCash, el renglón EFECTIVO).
+ * Con el liquidado, una compra por liquidar inflaba el denominador (CSPFU1390,
+ * 18-nov: VERDE con GOB_EXT 39.4 % que sobre el NAV era 45.75 %) y una venta por
+ * liquidar lo achicaba. Si los dos efectivos difieren en más de 0.5 % del NAV,
+ * hallazgo «liquidez desfasada», INFORMATIVO: no cambia el color.
+ */
+export const LIQUIDEZ_DESFASADA_UMBRAL_PCT = 0.5;
 
 /** P2 en GOB_MX/GOB_EXT: duración bajo la cual el exceso es «más conservador», no incumplimiento (1.1.0). */
 export const GOB_EXCESO_CORTO = {
@@ -51,10 +64,11 @@ export const GOB_EXCESO_CORTO = {
 
 export const ESTADOS = ['VERDE', 'AMBAR', 'ROJO', 'EXENTO', 'SIN_PERFIL', 'SIN_DATOS', 'INACTIVA'] as const;
 export type Estado = (typeof ESTADOS)[number];
-export type Severidad = 'critico' | 'incumple' | 'aviso';
+/** «informativo» (1.2.0) se registra y se muestra, pero no cambia el color. */
+export type Severidad = 'critico' | 'incumple' | 'aviso' | 'informativo';
 
 export interface Hallazgo {
-  prueba: 'P1' | 'P2' | 'P3' | 'P4' | 'SALDO_DEUDOR' | 'SIN_INVERTIR' | 'TIPO_CAMBIO';
+  prueba: 'P1' | 'P2' | 'P3' | 'P4' | 'SALDO_DEUDOR' | 'SIN_INVERTIR' | 'TIPO_CAMBIO' | 'LIQUIDEZ_DESFASADA';
   severidad: Severidad;
   mensaje: string;
   clase?: string;
@@ -125,8 +139,9 @@ function masRestrictivo(fuentes: { valor: number; origen: string }[], tipo: 'min
 }
 
 function estadoDe(hallazgos: Hallazgo[]): Estado {
-  if (hallazgos.some((h) => h.severidad !== 'aviso')) return 'ROJO';
-  return hallazgos.length ? 'AMBAR' : 'VERDE';
+  const cuentan = hallazgos.filter((h) => h.severidad !== 'informativo');
+  if (cuentan.some((h) => h.severidad !== 'aviso')) return 'ROJO';
+  return cuentan.length ? 'AMBAR' : 'VERDE';
 }
 
 export function evaluarCuenta(e: EntradaEvaluacion): Evaluacion {
@@ -164,10 +179,18 @@ export function evaluarCuenta(e: EntradaEvaluacion): Evaluacion {
   }
 
   // --- Clasificación ---
+  // Posiciones por su clase; el efectivo NO sale del renglón EFECTIVO (liquidado)
+  // sino del total derivado del NAV (1.2.0). El liquidado solo cuenta para liquidez.
   const porClase = new Map<string, number>();
-  let positiva = 0, negativa = 0, liquidez = 0;
+  let positiva = 0, negativa = 0, liquidez = 0, sumaPosiciones = 0;
+  let liquidado: number | null = null;
   const fracciones: { clase: string; valor: number; elegible: boolean; equivalente: boolean; duracion: number | null; ticker: string }[] = [];
   for (const r of foto.renglones) {
+    if (r.tipo_renglon === 'efectivo') {
+      liquidado = (liquidado ?? 0) + r.valor_base;
+      continue;
+    }
+    sumaPosiciones += r.valor_base;
     const k = clasificarRenglon(r, e.catalogo);
     for (const a of k.avisos) {
       hallazgos.push({ prueba: 'P1', severidad: a.nivel === 'critico' ? 'critico' : 'aviso', mensaje: a.mensaje, ticker: a.ticker });
@@ -181,6 +204,16 @@ export function evaluarCuenta(e: EntradaEvaluacion): Evaluacion {
         duracion: f.duracion_efectiva, ticker: r.ticker });
     }
   }
+  // Efectivo total = NAV − Σ posiciones: positivo, es la clase EFECTIVO; negativo, saldo deudor.
+  const efectivoTotal = foto.nav_ibkr - sumaPosiciones;
+  if (efectivoTotal > 0) {
+    positiva += efectivoTotal;
+    porClase.set('EFECTIVO', (porClase.get('EFECTIVO') ?? 0) + efectivoTotal);
+  } else {
+    negativa += -efectivoTotal;
+  }
+  // Liquidez: el efectivo LIQUIDADO (si es negativo, no aporta), más los equivalentes de las posiciones.
+  liquidez += Math.max(liquidado ?? 0, 0);
   const pct = (v: number) => (positiva > 0 ? (v / positiva) * 100 : 0);
   const pctClase = Object.fromEntries([...porClase].map(([c, v]) => [c, r2(pct(v))]));
   const suma = (clases: string[]) => clases.reduce((s, c) => s + (porClase.get(c) ?? 0), 0);
@@ -189,8 +222,17 @@ export function evaluarCuenta(e: EntradaEvaluacion): Evaluacion {
   const rf = pct(suma(RF) + (reglas.efectivo_cuenta_rf ? (porClase.get('EFECTIVO') ?? 0) : 0));
   const liq = pct(liquidez);
   const saldoDeudor = pct(negativa);
+  const desfase = liquidado === null ? null : Math.abs(liquidado - efectivoTotal);
+  const desfasePct = desfase === null || foto.nav_ibkr === 0 ? null : (desfase / Math.abs(foto.nav_ibkr)) * 100;
   Object.assign(metricas, { base_positiva: positiva, pct_por_clase: pctClase, rv_pct: r2(rv), rf_pct: r2(rf),
-    liquidez_pct: r2(liq), saldo_deudor_pct: r2(saldoDeudor) });
+    liquidez_pct: r2(liq), saldo_deudor_pct: r2(saldoDeudor), efectivo_total: r2(efectivoTotal),
+    efectivo_liquidado: liquidado === null ? null : r2(liquidado), liquidez_desfasada_pct: desfasePct === null ? null : r2(desfasePct) });
+  if (desfasePct !== null && desfasePct > LIQUIDEZ_DESFASADA_UMBRAL_PCT + EPS) {
+    hallazgos.push({ prueba: 'LIQUIDEZ_DESFASADA', severidad: 'informativo', valor_pct: r2(desfasePct),
+      limite_pct: LIQUIDEZ_DESFASADA_UMBRAL_PCT,
+      mensaje: `Efectivo liquidado ${r2(liquidado as number)} y total ${r2(efectivoTotal)} difieren ${r2(desfasePct)} % del NAV `
+        + '(operaciones por liquidar): la composición usa el total; la liquidez, el liquidado.' });
+  }
 
   // --- Sin invertir ---
   if (!e.es_propia && positiva > 0 && [...porClase.keys()].every((c) => c === 'EFECTIVO')) {
@@ -279,7 +321,9 @@ export function evaluarCuenta(e: EntradaEvaluacion): Evaluacion {
   const limites_aplicados = { techos, rv_max: rvMax, rf_min: rfMin, liquidez_min: liqMin,
     duracion_gob_menor_a: reglas.duracion_gob_menor_a, efectivo_cuenta_rf: reglas.efectivo_cuenta_rf,
     gob_exceso_corto: GOB_EXCESO_CORTO,
-    saldo_deudor_tolerancia_pct: e.parametros.saldoDeudorToleranciaPct, nav_residual_mxn: e.parametros.navResidualMxn };
+    saldo_deudor_tolerancia_pct: e.parametros.saldoDeudorToleranciaPct, nav_residual_mxn: e.parametros.navResidualMxn,
+    efectivo: 'total = NAV − posiciones (composición y saldo deudor); liquidado (liquidez)',
+    liquidez_desfasada_umbral_pct: LIQUIDEZ_DESFASADA_UMBRAL_PCT };
 
   if (e.es_propia) {
     return { ...base, metricas, limites_aplicados, estado: 'EXENTO',

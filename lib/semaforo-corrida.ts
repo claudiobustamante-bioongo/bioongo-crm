@@ -83,6 +83,45 @@ export function catalogoDe(d: Pick<DatosSemaforo, 'catalogo' | 'prorrateo'>): Ca
 
 const dia = (v: string | null) => (v ? String(v).slice(0, 10) : null);
 
+/** Una evaluación ya registrada (otra versión del motor), como la lee evaluar.mjs --comparar. */
+export interface EvaluacionPrevia {
+  cuenta_ibkr: string;
+  estado: string;
+  version_motor: string;
+  pruebas: string[]; // «PRUEBA:severidad»
+}
+
+export interface CambioCuenta {
+  codigo_cliente: string;
+  antes: { estado: string; pruebas: string[] } | null;
+  despues: { estado: string; pruebas: string[] };
+}
+
+const firma = (xs: readonly string[]) => [...xs].sort();
+
+/** Cuenta por cuenta: qué cambia de estado o de hallazgos frente a lo registrado con otra versión. */
+export function compararConPrevio(corrida: CorridaSemaforo, previas: readonly EvaluacionPrevia[]): {
+  version_previa: string | null; cambios: CambioCuenta[]; iguales: number; conteo_previo: Record<string, number>;
+} {
+  const porCuenta = new Map(previas.map((p) => [p.cuenta_ibkr, p]));
+  const cambios: CambioCuenta[] = [];
+  let iguales = 0;
+  for (const f of corrida.filas) {
+    const p = porCuenta.get(f.cuenta.cuenta_ibkr);
+    const despues = { estado: f.evaluacion.estado,
+      pruebas: firma(f.evaluacion.hallazgos.map((h) => `${h.prueba}:${h.severidad}`)) };
+    const antes = p ? { estado: p.estado, pruebas: firma(p.pruebas) } : null;
+    if (antes && antes.estado === despues.estado && JSON.stringify(antes.pruebas) === JSON.stringify(despues.pruebas)) {
+      iguales++;
+    } else {
+      cambios.push({ codigo_cliente: f.cuenta.codigo_cliente, antes, despues });
+    }
+  }
+  const conteo_previo: Record<string, number> = {};
+  for (const p of previas) conteo_previo[p.estado] = (conteo_previo[p.estado] ?? 0) + 1;
+  return { version_previa: previas[0]?.version_motor ?? null, cambios, iguales, conteo_previo };
+}
+
 /** Evalúa el universo de la carga. `fix`: MXN por USD de la tabla tipo_cambio (o null). */
 export function correrSemaforo(
   d: DatosSemaforo,

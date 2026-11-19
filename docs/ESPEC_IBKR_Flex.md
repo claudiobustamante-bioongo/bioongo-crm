@@ -77,8 +77,8 @@ Secciones y campos:
 ### 1.5 Lectura del XML (trampas verificadas)
 - **Moneda base por cuenta:** `AccountInformation/@currency`. En esta cartera **28 de 32 cuentas son MXN** y sus montos ya son pesos; solo 4 son USD.
 - **Valor de una posición en moneda base:** `positionValue × fxRateToBase`.
-- **Efectivo:** solo el `<CashReportCurrency currency="BASE_SUMMARY">`, campo `endingSettledCash`. Sumar los renglones por divisa lo duplica.
-- **NAV de IBKR:** total de `EquitySummaryByReportDateInBase`, **la última fecha** (la sección trae varias). Se guarda como renglón de control `NAV_IBKR` (no suma) y se concilia contra posiciones + efectivo; diferencia > 0.5% → aviso.
+- **Efectivo:** solo el `<CashReportCurrency currency="BASE_SUMMARY">`. Sumar los renglones por divisa lo duplica. Dos cifras (13-nov-2026): `endingSettledCash` (liquidado) es el renglón `EFECTIVO` de la foto; `endingCash` (total, con lo pendiente de liquidar) solo sirve para conciliar y **no se guarda**.
+- **NAV de IBKR:** total de `EquitySummaryByReportDateInBase`, **la última fecha** (la sección trae varias). Se guarda como renglón de control `NAV_IBKR` (no suma) y se concilia contra posiciones + `endingCash`; diferencia > 0.5% → aviso. Como esa conciliación cuadra, el efectivo total se **deriva** de la foto como `NAV_IBKR − Σ posiciones` (semáforo 1.2.0, §3.2.14).
 - **TWR** está en `ChangeInNAV`, no en la sección NAV. Cantidad = atributo `position`.
 - **`&` sin escapar** (p. ej. `S&P 500`) rompe el parser si el XML se copió del navegador: re-escapar los `&` que no formen parte de una entidad válida.
 - **Date Funded** = inicio real de la cuenta para rendimientos ("desde apertura").
@@ -147,6 +147,7 @@ Clases: `GOB_MX`, `GOB_EXT`, `GOB_EMERGENTE`, `CORP_IG`, `HIGH_YIELD`, `ACC_BMV`
 12. **ARKF = `CRIPTO`, no elegible**.
 13. **ZPDU** = `ACC_SIC`; **CBU7** = `GOB_EXT` duración 4.5.
 14. **Saldo deudor de efectivo**: porcentajes sobre la suma de saldos positivos; hasta 1% del NAV es aviso, arriba es incumplimiento (apalancamiento prohibido por el Marco General).
+    **Denominador y efectivo (semáforo 1.2.0, decisión de Claudio del 19-nov-2026):** el efectivo de la composición y del saldo deudor es el **total**, `NAV_IBKR − Σ posiciones` (= `endingCash`): si es positivo entra a la clase EFECTIVO y a la suma de positivos; si es negativo, es saldo deudor. La **liquidez** sigue con el efectivo **liquidado** (`endingSettledCash`; negativo no aporta) más los equivalentes. Motivo: con el liquidado, una compra por liquidar inflaba el denominador (CSPFU1390, 18-nov: GOB_EXT 39.4 % que sobre el NAV era 45.75 %) y una venta por liquidar lo achicaba (17-nov, 13 cuentas desfasadas); un liquidado negativo por una compra sin liquidar tampoco es préstamo de margen. Si liquidado y total difieren en más de 0.5 % del NAV, hallazgo **«liquidez desfasada», informativo: no cambia el color**. Sin cambio de esquema ni de carga: el motor lo deriva de la foto, también para fotos anteriores.
 15. **Cuentas propias del Asesor**: exentas de los límites, se evalúan pero no cuentan en totales.
 16. **Cuenta 100% en efectivo** = "sin invertir". **NAV ≤ 1,000 MXN** = inactiva, no se evalúa.
 

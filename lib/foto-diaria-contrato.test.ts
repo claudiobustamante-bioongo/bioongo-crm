@@ -12,6 +12,7 @@ import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { PGlite } from '@electric-sql/pglite';
 import { avanzar, depsDesdeRpc, type DepsFotoDiaria } from './foto-diaria-sistema';
+import { VERSION_MOTOR } from './semaforo';
 
 const leer = (rel: string) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
 const XML = leer('./__fixtures__/flex-sintetico.xml');
@@ -94,7 +95,7 @@ test('avanzar() contra las funciones SQL reales: pedir → recoger y cargar → 
   assert.deepEqual(fix.rows, [{ capturado_por: 'sistema:ibkr-cron', fecha_solicitada: '2026-11-09' }]);
   const sem = await db.query<{ n: number; por: string; version: string }>(
     `select count(*)::int n, min(evaluado_por) por, min(version_motor) version from public.semaforo_evaluaciones`);
-  assert.deepEqual(sem.rows, [{ n: 1, por: 'sistema:ibkr-cron', version: 'semaforo-1.1.0' }]);
+  assert.deepEqual(sem.rows, [{ n: 1, por: 'sistema:ibkr-cron', version: VERSION_MOTOR }]);
   const hoy = await db.query<{ td: string; foto: string; fix: string; semaforo: string; alerta_control: boolean }>(
     `select td::text, foto, fix, semaforo, alerta_control from public.v_foto_diaria_estado
       where dia = (now() at time zone 'America/Mexico_City')::date`);

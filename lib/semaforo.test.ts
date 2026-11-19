@@ -243,16 +243,71 @@ test('P5: en una conjunta, el límite más restrictivo con TODOS sus orígenes',
   assert.equal(ev.estado, 'ROJO');
 });
 
-test('saldo deudor: ≤ 1 % aviso (ÁMBAR); > 1 % incumple (ROJO)', () => {
-  const poco = evaluarCuenta(entrada({ renglones: [pos('ZZACC', 50_000), pos('ZZGOBC', 40_000), caja(10_000), caja(-500)] }));
+test('saldo deudor (1.2.0, con el efectivo TOTAL = NAV − posiciones): ≤ 1 % aviso; > 1 % incumple', () => {
+  // Posiciones 100 500 y NAV 100 000 → efectivo total −500 (0.5 % de los positivos). El liquidado, igual.
+  const foto = (posiciones: number, nav: number) =>
+    ({ moneda_base: 'MXN', nav_ibkr: nav, renglones: [pos('ZZACC', 50_000), pos('ZZGOBC', 40_000), pos('ZZBIL', posiciones - 90_000), caja(nav - posiciones)] });
+  const poco = evaluarCuenta(entrada({ foto: foto(100_500, 100_000) }));
   assert.deepEqual([poco.estado, pruebas(poco)], ['AMBAR', ['SALDO_DEUDOR:aviso']]);
-  const mucho = evaluarCuenta(entrada({ renglones: [pos('ZZACC', 50_000), pos('ZZGOBC', 40_000), caja(10_000), caja(-2_000)] }));
+  const mucho = evaluarCuenta(entrada({ foto: foto(102_000, 100_000) }));
   assert.deepEqual([mucho.estado, pruebas(mucho)], ['ROJO', ['SALDO_DEUDOR:incumple']]);
+});
+
+test('saldo deudor: un liquidado negativo por una compra por liquidar NO es deudor si el total es positivo', () => {
+  // Total 5 000 (NAV − posiciones) pero liquidado −20 000: la compra aún no liquida; no hay préstamo.
+  const ev = evaluarCuenta(entrada({ foto: { moneda_base: 'MXN', nav_ibkr: 100_000,
+    renglones: [pos('ZZACC', 50_000), pos('ZZGOBC', 35_000), pos('ZZBIL', 10_000), caja(-20_000)] } }));
+  assert.equal((ev.metricas as { saldo_deudor_pct: number }).saldo_deudor_pct, 0);
+  assert.deepEqual(pruebas(ev), ['LIQUIDEZ_DESFASADA:informativo']);
+  assert.equal(ev.estado, 'VERDE');
+});
+
+// Caso CSPFU1390 (18-nov), sintético: compra por liquidar → el liquidado (40 000) es MAYOR que el total (5 000).
+const COMPRA = { moneda_base: 'MXN', nav_ibkr: 100_000, renglones: [pos('ZZACC', 20_000), pos('ZZGOBC', 75_000), caja(40_000)] };
+// Venta por liquidar → el liquidado (2 000) es MENOR que el total (20 000).
+const VENTA = { moneda_base: 'MXN', nav_ibkr: 100_000,
+  renglones: [pos('ZZACC', 18_000), pos('ZZGOBC', 52_000), pos('ZZBIL', 10_000), caja(2_000)] };
+
+test('compra por liquidar (caso CSPFU1390): la composición va sobre el NAV, no sobre el liquidado inflado', () => {
+  const ev = evaluarCuenta(entrada({ foto: COMPRA }));
+  const m = ev.metricas as Record<string, number>;
+  // Con el liquidado, GOB_EXT habría sido 75/135 = 55.6 % (bajo el techo de 70: VERDE). Con el total, 75 %.
+  assert.deepEqual([m.efectivo_total, m.efectivo_liquidado, (m.pct_por_clase as unknown as Record<string, number>).GOB_EXT],
+    [5_000, 40_000, 75]);
+  assert.equal(m.liquidez_pct, 40); // la liquidez sigue con el liquidado
+  assert.deepEqual(pruebas(ev), ['LIQUIDEZ_DESFASADA:informativo', 'P2:aviso']);
+  assert.equal(ev.estado, 'AMBAR'); // por el P2 (gobierno corto sobre el techo), no por el desfase
+});
+
+test('venta por liquidar: el liquidado achicaba el denominador y fabricaba un ROJO; con el total, VERDE', () => {
+  const ev = evaluarCuenta(entrada({ perfil: perfilOk('Bajo'), foto: VENTA }));
+  const m = ev.metricas as Record<string, number>;
+  // Con el liquidado, la base era 82 000 y ACC_SIC 21.95 % > 20 (ROJO). Con el total (20 000), 18 %.
+  assert.deepEqual([m.efectivo_total, m.rv_pct, m.liquidez_pct], [20_000, 18, 12]);
+  assert.deepEqual(pruebas(ev), ['LIQUIDEZ_DESFASADA:informativo']);
+  assert.equal(ev.estado, 'VERDE');
+  const d = ev.hallazgos[0];
+  assert.deepEqual([d.valor_pct, d.limite_pct], [18, 0.5]);
+});
+
+test('liquidez desfasada: solo sobre el umbral (0.5 % del NAV), e informativa también en las propias', () => {
+  const justo = evaluarCuenta(entrada({ foto: { moneda_base: 'MXN', nav_ibkr: 100_000,
+    renglones: [pos('ZZACC', 50_000), pos('ZZGOBC', 40_000), caja(10_500)] } })); // 0.5 % exacto: no
+  assert.deepEqual([justo.estado, justo.hallazgos], ['VERDE', []]);
+  // El umbral es sobre el NAV, no sobre la base positiva: posiciones 101 000, NAV 100 000 (total −1 000),
+  // liquidado −1 505 → desfase 505 = 0.505 % del NAV (sí) pero 0.49999 % de la base (no).
+  const sobreNav = evaluarCuenta(entrada({ foto: { moneda_base: 'MXN', nav_ibkr: 100_000,
+    renglones: [pos('ZZACC', 50_000), pos('ZZGOBC', 41_000), pos('ZZBIL', 10_000), caja(-1_505)] } }));
+  assert.deepEqual(pruebas(sobreNav), ['LIQUIDEZ_DESFASADA:informativo', 'SALDO_DEUDOR:aviso']);
+  const propia = evaluarCuenta(entrada({ es_propia: true, foto: COMPRA }));
+  assert.equal(propia.estado, 'EXENTO');
+  assert.ok(propia.hallazgos.some((h) => h.prueba === 'LIQUIDEZ_DESFASADA' && h.informativo));
 });
 
 test('la evaluación guarda la versión del motor, el perfil y los límites aplicados', () => {
   const ev = evaluarCuenta(entrada({}));
-  assert.equal(ev.version_motor, 'semaforo-1.1.0');
+  assert.equal(ev.version_motor, 'semaforo-1.2.0');
+  assert.equal((ev.limites_aplicados as { liquidez_desfasada_umbral_pct: number }).liquidez_desfasada_umbral_pct, 0.5);
   assert.equal((ev.perfil_aplicado as { perfil: string }).perfil, 'Moderado');
   assert.ok('rv_max' in ev.limites_aplicados && 'techos' in ev.limites_aplicados);
   const regla = (ev.limites_aplicados as { gob_exceso_corto: { duracion_menor_a: number; decision: string } }).gob_exceso_corto;

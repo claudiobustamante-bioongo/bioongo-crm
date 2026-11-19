@@ -14,6 +14,7 @@ import {
 import { ErrorFlex } from './ibkr-flex-lectura';
 import type { DatosSemaforo } from './semaforo-corrida';
 import type { CuentaReferencia } from './ibkr-carga-reglas';
+import { VERSION_MOTOR } from './semaforo';
 
 const XML = readFileSync(new URL('./__fixtures__/flex-sintetico.xml', import.meta.url), 'utf8');
 const SIN_NAV = XML.replace(/<EquitySummaryInBase>[\s\S]*?<\/EquitySummaryInBase>/g, '');
@@ -120,7 +121,7 @@ test('pedido listo: carga solo las cuentas cargables; luego FIX del td y semáfo
     fuente: `Banxico SIE SF43718 (consulta automática, ${USUARIO_SISTEMA})`, nota: null }]);
   const lote = f.lotes[0] as { sync_id: string; tipo_cambio: number; evaluaciones: unknown[] };
   assert.deepEqual([lote.sync_id, lote.tipo_cambio, lote.evaluaciones.length], ['00000000-0000-0000-0000-0000000000a1', 18.5983, 1]);
-  assert.equal(f.anotados[2].detalle.version_motor, 'semaforo-1.1.0');
+  assert.equal(f.anotados[2].detalle.version_motor, VERSION_MOTOR);
 });
 
 test('IBKR sin NAV: «sin_nav», no carga; la ejecución siguiente vuelve a pedir', async () => {

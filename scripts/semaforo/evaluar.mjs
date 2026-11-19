@@ -17,11 +17,22 @@
 //               --confirmar <clave> que exige los mismos estados y hallazgos) →
 //               real (COMMIT). No admite --fix, --ips-fijado ni --referencia: se
 //               registra solo lo que dice la base.
+// --comparar    «sí»: además, cuenta por cuenta, qué cambia frente a la evaluación
+//               YA REGISTRADA de esa carga con la versión anterior del motor.
 // La salida va por código de cliente; sin nombres ni números de cuenta.
 import { createInterface } from 'node:readline/promises';
 import { ErrorScript, consultaSoloLectura, fmt, leerArgs, lista, psqlGuion, referenciaDesdeArchivo } from '../ibkr/comun.mjs';
 
-const { correrSemaforo } = await import('../../lib/semaforo-corrida.ts');
+const { correrSemaforo, compararConPrevio } = await import('../../lib/semaforo-corrida.ts');
+
+// --comparar sí: la evaluación YA REGISTRADA de esta carga con la versión anterior más reciente del motor.
+const SQL_PREVIO = (sync, version) => `select coalesce(json_agg(json_build_object('cuenta_ibkr', e.cuenta_ibkr, 'estado', e.estado,
+    'version_motor', e.version_motor,
+    'pruebas', (select coalesce(json_agg((h ->> 'prueba') || ':' || (h ->> 'severidad')), '[]') from jsonb_array_elements(e.hallazgos) h))), '[]')
+  from public.semaforo_evaluaciones e
+ where e.sync_id = '${sync}'::uuid
+   and e.version_motor = (select max(version_motor) from public.semaforo_evaluaciones
+                           where sync_id = '${sync}'::uuid and version_motor <> '${version}')`;
 const registro = await import('../../lib/semaforo-registro.ts');
 
 const SQL = (sync) => `
@@ -110,6 +121,26 @@ try {
     if (perfil.ok && perfil.ips_pendiente.length) console.log(`             (actualización de IPS pendiente: ${perfil.ips_pendiente.join('; ')})`);
   }
   console.log(`\n== Resumen: ${lista([...conteo].sort().map(([k, v]) => `${k} ${v}`))}`);
+
+  if (args.comparar === 'sí' || args.comparar === 'si') {
+    if (!/^[0-9a-f-]{36}$/.test(String(d.sync.id)) || !/^semaforo-[0-9.]+$/.test(corrida.version_motor)) {
+      throw new ErrorScript('carga o versión con forma inesperada.');
+    }
+    const previas = consultaSoloLectura(SQL_PREVIO(d.sync.id, corrida.version_motor), 'la evaluación registrada');
+    const c = compararConPrevio(corrida, previas);
+    if (!c.version_previa) {
+      console.log('\n== Comparación: esta carga no tiene evaluación registrada con otra versión.');
+    } else {
+      console.log(`\n== Comparación con ${c.version_previa} registrada · antes: ${lista(Object.entries(c.conteo_previo).sort().map(([k, v]) => `${k} ${v}`))}`);
+      console.log(`   sin cambio: ${c.iguales} · con cambio: ${c.cambios.length}`);
+      for (const x of c.cambios) {
+        const a = x.antes ? `${x.antes.estado} [${x.antes.pruebas.join(', ') || '—'}]` : '(sin registro)';
+        console.log(`   ${x.codigo_cliente}: ${a} → ${x.despues.estado} [${x.despues.pruebas.join(', ') || '—'}]`);
+      }
+    }
+  } else if (args.comparar) {
+    throw new ErrorScript('--comparar se escribe «--comparar sí».');
+  }
 
   if (!registrar) {
     console.log('Corrida en seco: nada se escribió en la base.');
