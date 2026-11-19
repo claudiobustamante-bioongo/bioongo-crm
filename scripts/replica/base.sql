@@ -1,7 +1,7 @@
 -- ============================================================================
 -- base.sql · réplica PGlite · SOLO ESQUEMA de public, sin una fila de datos.
--- Última migración incluida: 2026-11-18-02-cron-foto-diaria.sql (según la bitácora)
--- Generado desde el catálogo de producción el 2026-11-18 11:46 (CDMX)
+-- Última migración incluida: 2026-11-19-01-vista-comite-version.sql (según la bitácora)
+-- Generado desde el catálogo de producción el 2026-11-19 12:33 (CDMX)
 -- con scripts/replica/generar-base.sql. No se edita a mano: se regenera.
 -- ============================================================================
 set check_function_bodies = off;
@@ -2163,22 +2163,22 @@ create view public.v_comite_cartera with (security_invoker=true) as  SELECT ci.c
     (jsonb_array_length(e.ips_pendiente) > 0) AS actualizacion_ips_pendiente,
     e.version_motor,
     e.evaluado_en
-   FROM (( SELECT DISTINCT ON (semaforo_evaluaciones.cuenta_ibkr) semaforo_evaluaciones.id,
-            semaforo_evaluaciones.sync_id,
-            semaforo_evaluaciones.fecha_foto,
-            semaforo_evaluaciones.cuenta_ibkr,
-            semaforo_evaluaciones.estado,
-            semaforo_evaluaciones.hallazgos,
-            semaforo_evaluaciones.metricas,
-            semaforo_evaluaciones.perfil_aplicado,
-            semaforo_evaluaciones.limites_aplicados,
-            semaforo_evaluaciones.ips_pendiente,
-            semaforo_evaluaciones.tipo_cambio,
-            semaforo_evaluaciones.version_motor,
-            semaforo_evaluaciones.evaluado_por,
-            semaforo_evaluaciones.evaluado_en
-           FROM semaforo_evaluaciones
-          ORDER BY semaforo_evaluaciones.cuenta_ibkr, semaforo_evaluaciones.fecha_foto DESC, semaforo_evaluaciones.evaluado_en DESC) e
+   FROM (( SELECT DISTINCT ON (s.cuenta_ibkr) s.id,
+            s.sync_id,
+            s.fecha_foto,
+            s.cuenta_ibkr,
+            s.estado,
+            s.hallazgos,
+            s.metricas,
+            s.perfil_aplicado,
+            s.limites_aplicados,
+            s.ips_pendiente,
+            s.tipo_cambio,
+            s.version_motor,
+            s.evaluado_por,
+            s.evaluado_en
+           FROM semaforo_evaluaciones s
+          ORDER BY s.cuenta_ibkr, s.fecha_foto DESC, (string_to_array(split_part(s.version_motor, '-'::text, 2), '.'::text))::integer[] DESC, s.evaluado_en DESC) e
      JOIN cuentas_ibkr ci USING (cuenta_ibkr));
 create view public.v_foto_diaria_estado with (security_invoker=true) as  WITH e AS (
          SELECT ((ibkr_cron_eventos.creado_en AT TIME ZONE 'America/Mexico_City'::text))::date AS dia,
