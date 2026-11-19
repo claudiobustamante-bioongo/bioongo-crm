@@ -116,7 +116,7 @@ try {
     console.log(`\n  ${ev.estado.padEnd(10)} ${c.codigo_cliente}${c.tipo === 'conjunta' ? ' (conjunta)' : ''}${c.es_propia ? ' (propia)' : ''}${cifras}`);
     console.log(`             perfil: ${perf}`);
     for (const h of ev.hallazgos) {
-      console.log(`             [${h.severidad}${h.informativo ? ', informativo' : ''}] ${h.prueba}: ${h.mensaje}${h.origenes ? ` ← ${h.origenes.join(', ')}` : ''}`);
+      console.log(`             [${h.severidad}${h.informativo && h.severidad !== 'informativo' ? ', informativo' : ''}] ${h.prueba}: ${h.mensaje}${h.origenes ? ` ← ${h.origenes.join(', ')}` : ''}`);
     }
     if (perfil.ok && perfil.ips_pendiente.length) console.log(`             (actualización de IPS pendiente: ${perfil.ips_pendiente.join('; ')})`);
   }
