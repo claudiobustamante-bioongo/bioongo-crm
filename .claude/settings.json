@@ -1,0 +1,57 @@
+{
+  "permissions": {
+    "defaultMode": "default",
+    "disableBypassPermissionsMode": "disable",
+    "allow": [
+      "mcp__supabase__list_tables",
+      "mcp__supabase__list_extensions",
+      "mcp__supabase__list_migrations",
+      "mcp__supabase__get_advisors",
+      "mcp__supabase__get_project_url",
+      "mcp__supabase__search_docs",
+      "Bash(git status*)",
+      "Bash(git log*)",
+      "Bash(git diff*)",
+      "Bash(git show*)",
+      "Bash(npm test*)",
+      "Bash(npx vitest run*)",
+      "Bash(npx next build*)",
+      "Bash(npx eslint*)",
+      "Bash(node scripts/replica/correr.mjs *)",
+      "Bash(md5sum *)",
+      "Bash(~/.deno/bin/deno check *)",
+      "Bash(~/.deno/bin/deno test *)",
+      "Bash(psql service=bioongo -X -v ON_ERROR_STOP=1 -v modo=ensayo *)",
+      "Bash(psql service=bioongo -X -A -t -v ON_ERROR_STOP=1 -v ultima=* -f scripts/replica/generar-base.sql *)",
+      "Bash(node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/ibkr/vista-previa.mjs *)",
+      "Bash(node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/ibkr/cargar-foto.mjs *)",
+      "Bash(node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/banxico/fix.mjs *)",
+      "Bash(node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/semaforo/evaluar.mjs *)",
+      "Bash(supabase functions list*)"
+    ],
+    "ask": [
+      "mcp__supabase__execute_sql",
+      "Bash(*modo=real*)",
+      "Bash(*modo='real'*)",
+      "Bash(*modo=\"real\"*)",
+      "Bash(*--confirmar*)",
+      "Bash(*supabase functions deploy*)",
+      "Bash(*supabase functions delete*)",
+      "Bash(*git push*)"
+    ],
+    "deny": [
+      "Read(**/.env.local)",
+      "Edit(**/.env.local)",
+      "Write(**/.env.local)",
+      "Bash(*.env.local*)",
+      "Bash(*secrets set*)",
+      "Bash(*secrets unset*)",
+      "Bash(*decrypted_secret*)",
+      "Bash(*vault.*)",
+      "Bash(*pgpass*)",
+      "Bash(*bypassPermissions*)",
+      "Bash(*--dangerously*)",
+      "mcp__claude_ai_Akela_Supabase"
+    ]
+  }
+}
