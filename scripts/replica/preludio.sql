@@ -7,6 +7,9 @@
 create role anon nologin;
 create role authenticated nologin;
 create role service_role nologin bypassrls;
+-- mcp_lectura (migración 2026-11-20-01): en producción tiene LOGIN; aquí basta que
+-- exista para sus políticas y sus grants por columna. Sin contraseña.
+create role mcp_lectura nologin noinherit;
 grant usage on schema public to anon, authenticated, service_role;
 
 -- Como en producción: lo que se cree después nace con todo para los tres roles;

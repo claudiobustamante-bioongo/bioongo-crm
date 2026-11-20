@@ -111,7 +111,7 @@ with ddl(orden, sub, linea) as (
   -- 9 · Grants de tablas: primero se limpia, luego lo que tiene producción
   union all
   select 9, c.relname || '0',
-         'revoke all on public.' || quote_ident(c.relname) || ' from public, anon, authenticated, service_role;'
+         'revoke all on public.' || quote_ident(c.relname) || ' from public, anon, authenticated, service_role, mcp_lectura;'
     from pg_class c where c.relnamespace = 'public'::regnamespace and c.relkind in ('r', 'v')
   union all
   select 9, c.relname || '1' || x.privilege_type || x.grantee::text,
@@ -119,7 +119,7 @@ with ddl(orden, sub, linea) as (
          || case when x.grantee = 0 then 'public' else quote_ident(x.grantee::regrole::text) end || ';'
     from pg_class c, aclexplode(c.relacl) x
    where c.relnamespace = 'public'::regnamespace and c.relkind in ('r', 'v')
-     and (x.grantee = 0 or x.grantee::regrole::text in ('anon', 'authenticated', 'service_role'))
+     and (x.grantee = 0 or x.grantee::regrole::text in ('anon', 'authenticated', 'service_role', 'mcp_lectura'))
   -- Grants por columna (p. ej. ibkr_cron_eventos sin referencia_flex para
   -- authenticated, 18-nov-2026): después de los de tabla, porque el revoke de la
   -- tabla también limpia los de columna.
@@ -130,12 +130,12 @@ with ddl(orden, sub, linea) as (
     from pg_class c join pg_attribute a on a.attrelid = c.oid, aclexplode(a.attacl) x
    where c.relnamespace = 'public'::regnamespace and c.relkind in ('r', 'v')
      and a.attnum > 0 and not a.attisdropped and a.attacl is not null
-     and (x.grantee = 0 or x.grantee::regrole::text in ('anon', 'authenticated', 'service_role'))
+     and (x.grantee = 0 or x.grantee::regrole::text in ('anon', 'authenticated', 'service_role', 'mcp_lectura'))
 
   -- 10 · Grants de funciones
   union all
   select 10, p.oid::regprocedure::text || '0',
-         'revoke all on function ' || p.oid::regprocedure::text || ' from public, anon, authenticated, service_role;'
+         'revoke all on function ' || p.oid::regprocedure::text || ' from public, anon, authenticated, service_role, mcp_lectura;'
     from pg_proc p where p.pronamespace = 'public'::regnamespace
   union all
   select 10, p.oid::regprocedure::text || '1' || x.grantee::text,
@@ -143,7 +143,7 @@ with ddl(orden, sub, linea) as (
          || case when x.grantee = 0 then 'public' else quote_ident(x.grantee::regrole::text) end || ';'
     from pg_proc p, aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) x
    where p.pronamespace = 'public'::regnamespace
-     and (x.grantee = 0 or x.grantee::regrole::text in ('anon', 'authenticated', 'service_role'))
+     and (x.grantee = 0 or x.grantee::regrole::text in ('anon', 'authenticated', 'service_role', 'mcp_lectura'))
 )
 select linea from ddl order by orden, sub;
 
