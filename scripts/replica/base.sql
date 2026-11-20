@@ -1,7 +1,7 @@
 -- ============================================================================
 -- base.sql · réplica PGlite · SOLO ESQUEMA de public, sin una fila de datos.
--- Última migración incluida: 2026-11-20-01-rol-mcp-lectura.sql (según la bitácora)
--- Generado desde el catálogo de producción el 2026-11-20 15:44 (CDMX)
+-- Última migración incluida: 2026-11-20-02-propia-8588-y-baja-8085.sql (según la bitácora)
+-- Generado desde el catálogo de producción el 2026-11-20 16:06 (CDMX)
 -- con scripts/replica/generar-base.sql. No se edita a mano: se regenera.
 -- ============================================================================
 set check_function_bodies = off;
