@@ -3,6 +3,8 @@
     "defaultMode": "default",
     "disableBypassPermissionsMode": "disable",
     "allow": [
+      "mcp__bioongo-lectura__consultar_sql",
+      "Bash(node scripts/mcp-lectura/probar-en-vivo.mjs)",
       "mcp__supabase__list_tables",
       "mcp__supabase__list_extensions",
       "mcp__supabase__list_migrations",
@@ -30,7 +32,6 @@
       "Bash(supabase functions list*)"
     ],
     "ask": [
-      "mcp__supabase__execute_sql",
       "Bash(*modo=real*)",
       "Bash(*modo='real'*)",
       "Bash(*modo=\"real\"*)",
@@ -51,7 +52,8 @@
       "Bash(*pgpass*)",
       "Bash(*bypassPermissions*)",
       "Bash(*--dangerously*)",
-      "mcp__claude_ai_Akela_Supabase"
+      "mcp__claude_ai_Akela_Supabase",
+      "mcp__supabase__execute_sql"
     ]
   }
 }

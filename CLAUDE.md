@@ -5,7 +5,7 @@
 - SIEMPRE pide aprobación explícita antes de escribir, editar o borrar archivos.
 - Comandos (canon del 19-nov-2026): Claude los ejecuta; Claudio ya no los copia con «!».
   - Sin pedir permiso: pruebas, corridas en seco, vistas previas, ensayos con ROLLBACK, deno check/test, git status/log/diff, y las herramientas de lectura del MCP de Supabase.
-  - El SQL libre por MCP (`mcp__supabase__execute_sql`) pide confirmación: el 19-nov se comprobó que `read_only=true` se salta con `set transaction read write`. Se queda en «ask» hasta que el MCP use un rol sin privilegios de escritura.
+  - El SQL libre por MCP va por el MCP LOCAL `bioongo-lectura` (scripts/mcp-lectura/, rol `mcp_lectura`: SELECT por columna sin datos personales; una sentencia, READ ONLY y siempre ROLLBACK; salida enmascarada), en «allow». El `execute_sql` del MCP hospedado de Supabase está en «deny» desde el 20-nov: su `read_only=true` se salta con `set transaction read write`.
   - Con aprobación de Claudio POR SU NOMBRE («apruebo el real de X») y confirmación de Claude Code: reales en producción (psql modo=real; cargar-foto, fix y evaluar con --confirmar), supabase functions deploy, git push. Antes de pedir un real, siempre el resumen del ensayo.
   - Nunca: valores de secretos, .env.local, supabase secrets set, Vault, ni modos que se salten los permisos.
 - NUNCA uses modo auto-accept / auto-aprobación, ni sugieras activarlo.
